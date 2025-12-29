@@ -1,0 +1,32 @@
+# 1. Ignore everything by default
+/*
+
+# 2. Re-allow directories we want content from
+!/src/
+!/include/
+!/sql/
+
+# 3. Ignore build / generated stuff
+/dist/
+/config/
+/certs/
+.deps/
+.dirstamp
+/src/.deps/
+/src/**/*.o
+/src/Makefile
+/src/Makefile.in
+
+# 4. Allow source + headers
+!/src/*.c
+!/include/*.h
+!/sql/*.sql
+
+# 5. Allow root-level important files
+!lightmail.conf.example
+!Makefile.am
+!configure.ac
+!.gitignore
+!readme.md
+!.clang-format
+!LICENSE

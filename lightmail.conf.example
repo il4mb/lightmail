@@ -1,0 +1,34 @@
+[Database]
+host = localhost
+port = 3306
+user = imap_user
+password = secure_password
+database = imap_server
+pool_size = 10
+
+[Server]
+imap_port = 143
+imaps_port = 993 
+max_clients = 100 
+buffer_size = 8192 # in bytes
+session_timeout = 1800  # in seconds
+log_file = /var/log/lightmail.log
+log_level = 2  # 0=ERROR, 1=WARN, 2=INFO, 3=DEBUG
+
+[SSL]
+cert_file = /var/lib/lightmail/certs/cert.pem
+key_file = /var/lib/lightmail/certs/key.pem
+
+[S3]
+# Uncomment to enable S3 storage
+# endpoint = s3.amazonaws.com
+# region = us-east-1
+# bucket = imap-mail-storage
+# access_key = your-access-key
+# secret_key = your-secret-key
+# use_ssl = 1
+
+[Paths]
+mail_dir = /var/lib/lightmail/mailboxes
+temp_dir = /tmp/lightmail
+lib_dir = /usr/lib/lightmail
