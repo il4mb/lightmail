@@ -3,6 +3,7 @@
 #include "mailbox.h"
 #include "s3.h"
 #include "log.h"
+#include "shutdown.h"
 
 #include <arpa/inet.h>
 #include <ctype.h>
@@ -25,20 +26,14 @@
 #define MAX_RESPONSE_LENGTH 4096
 #define SESSION_TIMEOUT 1800
 
-// Response functions
-void send_response(ClientState *client, const char *response) {
-    if (client->use_ssl && client->ssl) {
-        SSL_write(client->ssl, response, strlen(response));
-    } else {
-        send(client->socket, response, strlen(response), 0);
-    }
-}
-
 bool IS_IMAP_RUNNING = false;
 
 int start_imap() {
 
+    setup_signal_handlers();
+
     const ServerConfig *cfg = get_config();
+
     int port = cfg->imap_port;
     int port_ssl = cfg->imaps_port;
     int imap_socket;
@@ -46,9 +41,11 @@ int start_imap() {
     IS_IMAP_RUNNING = true;
     printf("Starting IMAP server on port %d (IMAP) and %d (IMAPS)...\n", port, port_ssl);
     LOGD("IMAP server started. Listening on port %d (IMAP) and %d (IMAPS).", port, port_ssl);
-    while (IS_IMAP_RUNNING) {
+    while (!g_shutdown) {
         sleep(1);
     }
+
+    // send_response(client, "* BYE Server shutting down\r\n", 30, 0);
 
     printf("IMAP server stopped.\n");
     LOGD("IMAP server stopped.");

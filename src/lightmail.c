@@ -2,6 +2,7 @@
 #include "db.h"
 #include "log.h"
 #include "s3.h"
+#include "shutdown.h"
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -136,6 +137,7 @@ void daemonize() {
 
 int main(int argc, char *argv[]) {
 
+    setup_signal_handlers();
     LOG_INIT();
 
     CommandLineOptions opts;
@@ -196,7 +198,21 @@ int main(int argc, char *argv[]) {
     const ServerConfig *cfg = get_config();
     printf("IMAP PORT %d\n", cfg->imap_port);
 
-    start_imap();
+    pid_t pid = fork();
+
+    if (pid < 0) {
+        perror("fork failed");
+        return 1;
+    }
+
+    if (pid == 0) {
+        // CHILD PROCESS → IMAP
+        start_imap();
+        _exit(0);
+    }
+
+    // PARENT PROCESS continues
+    printf("IMAP started in background (pid=%d)\n", pid);
 
     // Cleanup
     db_cleanup();
@@ -204,4 +220,3 @@ int main(int argc, char *argv[]) {
     LOG_CLOSE();
     return EXIT_SUCCESS;
 }
-

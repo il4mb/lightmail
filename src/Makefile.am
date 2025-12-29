@@ -3,6 +3,7 @@ AM_CPPFLAGS = -I$(top_srcdir)/include
 
 lightmail_SOURCES = \
     lightmail.c \
+    shutdown.c \
     config/config.c \
     lib/db.c \
     lib/s3.c \

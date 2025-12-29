@@ -23,9 +23,13 @@ typedef struct {
 } ClientState;
 
 int stop_imap();
-// Start IMAP server
 int start_imap();
-
 bool is_imap_running();
+
+void send_response(ClientState *client, const char *response);
+void send_untagged(ClientState *client, const char *message);
+void send_tagged_ok(ClientState *client, const char *tag, const char *message);
+void send_tagged_no(ClientState *client, const char *tag, const char *message);
+void send_tagged_bad(ClientState *client, const char *tag, const char *message);
 
 #endif

@@ -294,7 +294,7 @@ int parse_config(const char *custom_config_path) {
             trim(key);
             trim(value);
 
-            printf("Config: [%s] \"%s\" = \"%s\"\n", section, key, value); // existing debug output
+            // printf("Config: [%s] \"%s\" = \"%s\"\n", section, key, value); // existing debug output
 
             if (strcmp(section, "Database") == 0) {
                 if (strcmp(key, "host") == 0)
