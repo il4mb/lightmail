@@ -138,7 +138,7 @@ We welcome contributions! Since this project is in early development, please not
 ```bash
 # 1. Fork the repository
 # 2. Clone your fork
-git clone https://github.com/YOUR_USERNAME/lightmail.git
+git clone https://github.com/il4mb/lightmail.git
 
 # 3. Create a feature branch
 git checkout -b feature/your-feature
@@ -217,19 +217,6 @@ CREATE TABLE sessions (...);
 - Message retrieval: < 50ms for 10MB messages
 - Search operations: < 100ms for 1M messages
 - Memory usage: < 50MB base + 1MB per connection
-
-## 🐳 Docker Development
-
-```bash
-# Build development container
-docker build -t lightmail-dev -f Dockerfile.dev .
-
-# Run with mounted source
-docker run -v $(pwd):/app -p 143:143 lightmail-dev
-
-# Run tests in container
-docker run lightmail-dev make test
-```
 
 ## 📚 Documentation Status
 
