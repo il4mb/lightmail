@@ -1,8 +1,8 @@
+#include "parser.h"
 #include "conf.h"
-#include "db.h"
 #include "log.h"
-#include "s3.h"
 #include "shutdown.h"
+#include <dlfcn.h>
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,42 +17,38 @@ typedef struct {
     int help;
     int version;
     int test_config;
-} CommandLineOptions;
+} CommandOptions;
 
-// Parse command line arguments
-void parse_command_line(int argc, char *argv[], CommandLineOptions *opts) {
-    memset(opts, 0, sizeof(CommandLineOptions));
+void args_callback(const char *k, const char *v, void *ctx) {
+    CommandOptions *s = (CommandOptions *)ctx;
+    // Safety check: k should always exist, but let's be sure
+    if (!k || strlen(k) < 2)
+        return;
 
-    // Default config file
-    strcpy(opts->config_file, "");
-
-    // Parse options
-    int opt;
-    while ((opt = getopt(argc, argv, "c:dvhtV")) != -1) {
-        switch (opt) {
-        case 'c': // Config file
-            strncpy(opts->config_file, optarg, sizeof(opts->config_file) - 1);
-            opts->config_file[sizeof(opts->config_file) - 1] = '\0';
+    switch (k[1]) {
+        case 'c':
+            if (v) { // Always check if v is NULL (user forgot the filename)
+                strncpy(s->config_file, v, sizeof(s->config_file) - 1);
+                s->config_file[sizeof(s->config_file) - 1] = '\0';
+            } else {
+                fprintf(stderr, "Error: Option -c requires a configuration file path.\n");
+            }
             break;
-        case 'd': // Daemon mode
-            opts->daemon_mode = 1;
+        case 'd':
+            s->daemon_mode = 1;
             break;
-        case 'v': // Verbose
-            opts->verbose = 1;
+        case 'h':
+            s->help = 1;
             break;
-        case 't': // Test config
-            opts->test_config = 1;
+        case 'V':
+            s->version = 1;
             break;
-        case 'h': // Help
-            opts->help = 1;
+        case 't':
+            s->test_config = 1;
             break;
-        case 'V': // Version
-            opts->version = 1;
+        default:
+            printf("Unknown option: %s\n", k);
             break;
-        case '?':
-            fprintf(stderr, "Unknown option: %c\n", optopt);
-            exit(EXIT_FAILURE);
-        }
     }
 }
 
@@ -140,10 +136,8 @@ int main(int argc, char *argv[]) {
     setup_signal_handlers();
     LOG_INIT();
 
-    CommandLineOptions opts;
-
-    // Parse command line
-    parse_command_line(argc, argv, &opts);
+    CommandOptions opts = {0};
+    parse_command_line(argc, argv, args_callback, &opts);
 
     // Handle special options
     if (opts.help) {
@@ -156,27 +150,9 @@ int main(int argc, char *argv[]) {
         return EXIT_SUCCESS;
     }
 
-    // Parse configuration
-    if (!parse_config(opts.config_file)) {
-        fprintf(stderr, "Failed to parse configuration\n");
+    if (init_config(opts.config_file) == EXIT_FAILURE) {
+        fprintf(stderr, "Failed to initialize configuration\n");
         return EXIT_FAILURE;
-    }
-
-    // Test configuration mode
-    if (opts.test_config) {
-        printf("Configuration test successful!\n");
-        print_config();
-
-        // Test database connection
-        printf("\nTesting database connection...\n");
-        if (db_init()) {
-            printf("Database: OK\n");
-            db_cleanup();
-        } else {
-            printf("Database: FAILED\n");
-        }
-
-        return EXIT_SUCCESS;
     }
 
     // Daemonize if requested
@@ -184,39 +160,22 @@ int main(int argc, char *argv[]) {
         daemonize();
     }
 
-    // Verbose output
-    if (opts.verbose) {
-        print_config();
-    }
-
-    // Initialize database
-    if (!db_init()) {
-        fprintf(stderr, "Failed to initialize database\n");
-        return EXIT_FAILURE;
-    }
-
-    const ServerConfig *cfg = get_config();
-    printf("IMAP PORT %d\n", cfg->imap_port);
-
     pid_t pid = fork();
 
     if (pid < 0) {
+        LOGE("Fork failed for IMAP server");
         perror("fork failed");
         return 1;
     }
 
     if (pid == 0) {
         // CHILD PROCESS → IMAP
-        start_imap();
+        // start_imap();
         _exit(0);
     }
 
-    // PARENT PROCESS continues
-    printf("IMAP started in background (pid=%d)\n", pid);
 
-    // Cleanup
-    db_cleanup();
-
+    free_config();
     LOG_CLOSE();
     return EXIT_SUCCESS;
 }

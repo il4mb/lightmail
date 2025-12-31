@@ -1,43 +1,45 @@
 #ifndef S3_H
 #define S3_H
 
-#include <stddef.h>
 #include <stdbool.h>
+#include <stddef.h>
 
-// S3 configuration
-typedef struct
-{
+typedef struct {
     char *endpoint;
     char *region;
-    char *bucket;
     char *access_key;
     char *secret_key;
+    char *bucket;
     bool use_ssl;
-} S3Config;
+} S3Client;
+
+typedef struct {
+    char *data;
+    size_t size;
+} S3Response;
+
+static S3Client *s3_client_new(const char *endpoint, const char *region, const char *bucket, const char *access_key, const char *secret_key) {
+
+    S3Client *client = calloc(1, sizeof(S3Client));
+    if (!client)
+        return NULL;
+
+    client->endpoint = strdup(endpoint);
+    client->region = strdup(region);
+    client->bucket = strdup(bucket);
+    client->access_key = strdup(access_key);
+    client->secret_key = strdup(secret_key);
+
+    return client;
+}
 
 char *sha256_hash(const char *input);
 char *calculate_signature(const char *to_sign, const char *date, const char *region, const char *service);
-
-// Initialize S3 client
-bool s3_init(const char *endpoint, const char *region,
-             const char *access_key, const char *secret_key,
-             bool use_ssl);
-
-// Upload message body to S3
-char *s3_upload_message(int account_id, int mailbox_id, int message_uid,
-                        const char *data, size_t size,
-                        const char *content_type);
-
-// Download message body from S3
+int s3_init();
+char *s3_upload_message(int account_id, int mailbox_id, int message_uid, const char *data, size_t size, const char *content_type);
 char *s3_download_message(const char *s3_key, size_t *size);
-
-// Delete message from S3
 bool s3_delete_message(const char *s3_key);
-
-// Generate S3 key for message
 char *s3_generate_key(int account_id, int mailbox_id, int message_uid);
-
-// Cleanup S3 client
 void s3_cleanup(void);
 
 #endif

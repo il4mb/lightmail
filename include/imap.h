@@ -7,6 +7,20 @@
 #include <stdbool.h>
 #include <openssl/ssl.h>
 
+#define MAX_BUFFER_SIZE 8192
+#define MAX_TAG_LENGTH 64
+#define MAX_COMMAND_LENGTH 64
+#define MAX_RESPONSE_LENGTH 4096
+#define SESSION_TIMEOUT 1800
+
+typedef struct {
+    int port;
+    int ssl_port;
+    int max_clients;
+    int timeout;
+    int buffer_size;
+} ImapConfig;
+
 // IMAP session state
 typedef struct {
     int socket;
@@ -22,7 +36,7 @@ typedef struct {
     int client_port;
 } ClientState;
 
-int stop_imap();
+static ImapConfig *get_config_imap();
 int start_imap();
 bool is_imap_running();
 

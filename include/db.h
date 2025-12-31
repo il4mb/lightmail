@@ -7,6 +7,16 @@
 #include <time.h>
 #include <bits/pthreadtypes.h>
 
+typedef struct {
+    char *host;
+    char *user;
+    char *password;
+    char *name;
+    char *socket;
+    int port;
+    int pool_size;
+} DBConfig;
+
 // Connection pool structure
 typedef struct {
     MYSQL *connections[20];
@@ -71,7 +81,7 @@ typedef struct {
 
 
 // Database functions
-bool db_init(void);
+int db_init(void);
 void db_cleanup(void);
 MYSQL* db_get_connection(void);
 void db_release_connection(MYSQL *conn);

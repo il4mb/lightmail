@@ -1,82 +1,49 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#include <stdbool.h>
 #include <stddef.h>
 
-#define PATH_MAX 4096
+#define MAX_SECTIONS 100
+#define MAX_CONF_MAP_ENTRIES 500
 
-
-// Configuration structure
+/* Configuration structures */
 typedef struct {
-    char db_host[256];
-    int db_port;
-    char db_user[256];
-    char db_password[256];
-    char db_name[256];
-    int db_pool_size;
-    
-    int imap_port;
-    int imaps_port;
-    int max_clients;
-    int buffer_size;
-    int session_timeout;
-    char log_file[PATH_MAX];
-    int log_level;
-    
-    char ssl_cert_file[PATH_MAX];
-    char ssl_key_file[PATH_MAX];
-    
-    char mail_dir[PATH_MAX];
-    char temp_dir[PATH_MAX];
-    char lib_dir[PATH_MAX];
-    char etc_dir[PATH_MAX];
-    
-    // Runtime detected paths
-    char config_path[PATH_MAX];
-    char exe_path[PATH_MAX];
-    char exe_dir[PATH_MAX];
-    char runtime_dir[PATH_MAX];
-} ServerConfig;
+    char *key;
+    char *value;
+} Config;
 
-const ServerConfig *get_config(void);
+typedef struct {
+    char *section;
+    Config entries[MAX_CONF_MAP_ENTRIES];
+    size_t entry_count;
+} ConfigMap;
 
-// Configuration parsing
-int parse_config(const char *custom_config_path);
+typedef struct {
+    ConfigMap sections[MAX_SECTIONS];
+    size_t section_count;
+    char *base_directory; /* Added for path resolution */
+} ConfigCollection;
 
-// Path information
-const char* get_config_path(void);
-const char* get_exe_path_str(void);
-const char* get_exe_dir_str(void);
-const char* get_runtime_dir(void);
+/* Callback types */
+typedef void (*config_section_callback_t)(const char *key, const char *value, void *ctx);
+typedef void (*config_section_iterator_t)(const char *section, size_t entry_count, void *ctx);
 
-// Database configuration
-const char* get_db_host(void);
-int get_db_port(void);
-const char* get_db_user(void);
-const char* get_db_password(void);
-const char* get_db_name(void);
-int get_db_pool_size(void);
+/* Core API */
+ConfigCollection *get_global_config(void);
+int init_config(const char *config_path);
+void set_config_value(const char *section, const char *key, const char *value);
+const char *get_config_value(const char *section, const char *key);
+int get_config_int(const char *section, const char *key, int default_value);
+bool get_config_bool(const char *section, const char *key, bool default_value);
+void get_config_section(const char *section, config_section_callback_t callback, void *ctx);
+void iterate_config_sections(config_section_iterator_t iterator, void *ctx);
+void free_config(void);
 
-// Server configuration
-int get_imap_port(void);
-int get_imaps_port(void);
-int get_max_clients(void);
-int get_buffer_size(void);
-int get_session_timeout(void);
-const char* get_log_file(void);
-int get_log_level(void);
+/* Path resolution API */
+char *get_config_path(const char *section, const char *key, const char *default_path);
+char *get_config_path_with_default(const char *section, const char *key,
+                                   const char *default_path, bool must_exist);
+char *resolve_config_path(const char *path);
 
-// SSL configuration
-const char* get_ssl_cert_file(void);
-const char* get_ssl_key_file(void);
-
-// Paths configuration
-const char* get_mail_dir(void);
-const char* get_temp_dir(void);
-const char* get_lib_dir(void);
-const char* get_etc_dir(void);
-
-// Debug
-void print_config(void);
-
-#endif
+#endif /* CONFIG_H */
