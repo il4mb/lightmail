@@ -166,6 +166,17 @@ git push origin feature/your-feature
 
 ## 🔍 Testing
 
+Run the included unit tests (fast, self-contained):
+
+```bash
+# Run unit tests
+./tests/run_tests.sh
+```
+
+Benchmarks (manual): see `bench/append_bench.sh` and `bench/fetch_bench.sh` for instructions and simple helper scripts.
+
+## 🔍 Testing
+
 ```bash
 # Run unit tests
 make test-unit

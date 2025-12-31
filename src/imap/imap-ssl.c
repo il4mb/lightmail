@@ -1,8 +1,9 @@
-#include "imap.h"
 
 #include "imap-ssl.h"
-#include "imap-client.h"
 #include "conf.h"
+#include "imap-client.h"
+#include "imap.h"
+#include "log.h"
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <openssl/err.h>
@@ -28,14 +29,21 @@ SSL_CTX *init_ssl(void) {
         return NULL;
     }
 
+    const char *cert_path = get_config_value("ssl", "cert_file");
+    const char *key_path = get_config_value("ssl", "key_file");
+
     // Load certificate and private key
-    if (SSL_CTX_use_certificate_file(ctx, "cert.pem", SSL_FILETYPE_PEM) <= 0 ||
-        SSL_CTX_use_PrivateKey_file(ctx, "key.pem", SSL_FILETYPE_PEM) <= 0) {
+    if (SSL_CTX_use_certificate_file(ctx, cert_path, SSL_FILETYPE_PEM) <= 0 || SSL_CTX_use_PrivateKey_file(ctx, key_path, SSL_FILETYPE_PEM) <= 0) {
+        printf("Failed to load SSL certificate or key\n");
+        LOGE("Failed to load SSL certificate or key\n");
         ERR_print_errors_fp(stderr);
         SSL_CTX_free(ctx);
+        free(cert_path);
+        free(key_path);
         return NULL;
     }
-
+    free(cert_path);
+    free(key_path);
     return ctx;
 }
 

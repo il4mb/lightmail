@@ -225,3 +225,17 @@ int db_get_next_uid(int mailbox_id) {
 
     return uid_next;
 }
+
+/* Free a Message and its allocated fields */
+void db_free_message(Message *m) {
+    if (!m) return;
+    free(m->flags);
+    free(m->envelope_from);
+    free(m->envelope_to);
+    free(m->envelope_subject);
+    free(m->envelope_message_id);
+    free(m->body_s3_key);
+    free(m->mime_type);
+    free(m->encoding);
+    free(m);
+}

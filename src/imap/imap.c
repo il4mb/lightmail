@@ -1,5 +1,5 @@
-#include "db.h"
 #include "imap.h"
+#include "db.h"
 #include "imap-client.h"
 #include "imap-ssl.h"
 #include "log.h"
@@ -41,6 +41,8 @@ void imap_config_callback(const char *key, const char *value) {
         cfg->timeout = atoi(value);
     } else if (strcmp(key, "buffer_size") == 0) {
         cfg->buffer_size = atoi(value);
+    } else if (strcmp(key, "max_message_size") == 0) {
+        cfg->max_message_size = (size_t)atoll(value);
     }
 }
 
@@ -49,27 +51,85 @@ ImapConfig cfg = {
     .ssl_port = 993,
     .max_clients = 100,
     .timeout = 300,
-    .buffer_size = 8192};
+    .buffer_size = 8192,
+    .max_message_size = 10 * 1024 * 1024 /* 10MB default */};
 
-static ImapConfig *get_config_imap() {
+ImapConfig *get_config_imap() {
     return &cfg;
 }
 
 bool IS_IMAP_RUNNING = false;
 
+/* Track current client count and enforce max_clients */
+static int current_clients = 0;
+static pthread_mutex_t clients_lock = PTHREAD_MUTEX_INITIALIZER;
+
+int imap_increment_client(void) {
+    pthread_mutex_lock(&clients_lock);
+    if (current_clients >= cfg.max_clients) {
+        pthread_mutex_unlock(&clients_lock);
+        return 0;
+    }
+    current_clients++;
+    pthread_mutex_unlock(&clients_lock);
+    return 1;
+}
+
+void imap_decrement_client(void) {
+    pthread_mutex_lock(&clients_lock);
+    if (current_clients > 0) current_clients--;
+    pthread_mutex_unlock(&clients_lock);
+}
+
 int start_imap() {
 
     get_config_section("imap", imap_config_callback, &cfg);
-    // const ServerConfig *cfg = get_config();
 
-    // int port = cfg.port;
-    // int port_ssl = cfg.ssl_port;
     int imap_socket;
-
     int server_socket, ssl_server_socket;
     struct sockaddr_in server_addr, ssl_server_addr;
     pthread_t thread_id;
     SSL_CTX *ssl_ctx = NULL;
+
+    int port_available = is_port_available(cfg.port);
+    int port_ssl_available = is_port_available(cfg.ssl_port);
+
+    if (port_available == 0) {
+        LOGE("Port %d is already in use. IMAP server cannot start.", cfg.port);
+        fprintf(stderr, "Error: Port %d is already in use. IMAP server cannot start.\n", cfg.port);
+        close(server_socket);
+        if (ssl_ctx) {
+            SSL_CTX_free(ssl_ctx);
+        }
+        return 1;
+    }
+    if (port_available == -1) {
+        LOGE("Error checking port %d availability", cfg.port);
+        fprintf(stderr, "Error: Error checking port %d availability\n", cfg.port);
+        close(server_socket);
+        if (ssl_ctx) {
+            SSL_CTX_free(ssl_ctx);
+        }
+        return 1;
+    }
+    if (port_ssl_available == 0) {
+        LOGE("Port %d is already in use. IMAPS server cannot start.", cfg.ssl_port);
+        fprintf(stderr, "Error: Port %d is already in use. IMAPS server cannot start.\n", cfg.ssl_port);
+        close(server_socket);
+        if (ssl_ctx) {
+            SSL_CTX_free(ssl_ctx);
+        }
+        return 1;
+    }
+    if (port_ssl_available == -1) {
+        LOGE("Error checking port %d availability", cfg.ssl_port);
+        fprintf(stderr, "Error: Error checking port %d availability\n", cfg.ssl_port);
+        close(server_socket);
+        if (ssl_ctx) {
+            SSL_CTX_free(ssl_ctx);
+        }
+        return 1;
+    }
 
     // Initialize SSL for IMAPS
     ssl_ctx = init_ssl();
@@ -167,10 +227,19 @@ int start_imap() {
         printf("New connection from %s:%d\n", client_state->client_ip, client_state->client_port);
         LOGI("New connection from %s:%d", client_state->client_ip, client_state->client_port);
 
+        // Enforce max clients
+        if (!imap_increment_client()) {
+            LOGW("Rejecting connection from %s:%d: server busy", client_state->client_ip, client_state->client_port);
+            free(client_state);
+            close(client_socket);
+            continue;
+        }
+
         // Create thread for client
         if (pthread_create(&thread_id, NULL, handle_client, client_state) != 0) {
             perror("Thread creation failed");
             LOGE("Failed to create thread for client");
+            imap_decrement_client();
             free(client_state);
             close(client_socket);
             continue;

@@ -1,4 +1,5 @@
 #include "imap.h"
+#include <ctype.h>
 
 // Response functions
 void send_response(ClientState *client, const char *response) {
@@ -33,6 +34,15 @@ void send_tagged_bad(ClientState *client, const char *tag, const char *message) 
     send_response(client, response);
 }
 
+/* Send raw bytes to client (useful for streaming binary/message content) */
+void send_bytes(ClientState *client, const void *data, size_t len) {
+    if (client->use_ssl && client->ssl) {
+        SSL_write(client->ssl, data, len);
+    } else {
+        send(client->socket, data, len, 0);
+    }
+}
+
 // Parse IMAP command
 int parse_command(char *buffer, char *tag, char *command, char *args) {
     char *ptr = buffer;
@@ -61,8 +71,10 @@ int parse_command(char *buffer, char *tag, char *command, char *args) {
     }
 
     ptr++; // Skip space
-    strncpy(args, ptr, MAX_BUFFER_SIZE - (ptr - buffer) - 1);
-    args[MAX_BUFFER_SIZE - (ptr - buffer) - 1] = '\0';
+    size_t arglen = strlen(ptr);
+    if (arglen > MAX_BUFFER_SIZE - 1) arglen = MAX_BUFFER_SIZE - 1;
+    memcpy(args, ptr, arglen);
+    args[arglen] = '\0';
 
     return 1;
 }

@@ -1,6 +1,7 @@
-#include "parser.h"
+#include "lightmail.h"
 #include "conf.h"
 #include "log.h"
+#include "parser.h"
 #include "shutdown.h"
 #include <dlfcn.h>
 #include <getopt.h>
@@ -12,11 +13,9 @@
 // Command line options structure
 typedef struct {
     char config_file[256];
-    int daemon_mode;
-    int verbose;
+    int reload;
     int help;
     int version;
-    int test_config;
 } CommandOptions;
 
 void args_callback(const char *k, const char *v, void *ctx) {
@@ -26,29 +25,26 @@ void args_callback(const char *k, const char *v, void *ctx) {
         return;
 
     switch (k[1]) {
-        case 'c':
-            if (v) { // Always check if v is NULL (user forgot the filename)
-                strncpy(s->config_file, v, sizeof(s->config_file) - 1);
-                s->config_file[sizeof(s->config_file) - 1] = '\0';
-            } else {
-                fprintf(stderr, "Error: Option -c requires a configuration file path.\n");
-            }
-            break;
-        case 'd':
-            s->daemon_mode = 1;
-            break;
-        case 'h':
-            s->help = 1;
-            break;
-        case 'V':
-            s->version = 1;
-            break;
-        case 't':
-            s->test_config = 1;
-            break;
-        default:
-            printf("Unknown option: %s\n", k);
-            break;
+    case 'c':
+        if (v) { // Always check if v is NULL (user forgot the filename)
+            strncpy(s->config_file, v, sizeof(s->config_file) - 1);
+            s->config_file[sizeof(s->config_file) - 1] = '\0';
+        } else {
+            fprintf(stderr, "Error: Option -c requires a configuration file path.\n");
+        }
+        break;
+    case 'h':
+        s->help = 1;
+        break;
+    case 'V':
+        s->version = 1;
+        break;
+    case 'reload':
+        s->reload = 1;
+        break;
+    default:
+        printf("Unknown option: %s\n", k);
+        break;
     }
 }
 
@@ -91,91 +87,55 @@ void print_version() {
     printf("License: MIT\n");
 }
 
-// Daemonize process
-void daemonize() {
-    pid_t pid = fork();
-
-    if (pid < 0) {
-        perror("fork failed");
-        exit(EXIT_FAILURE);
-    }
-
-    if (pid > 0) {
-        // Parent process exits
-        exit(EXIT_SUCCESS);
-    }
-
-    // Child process continues
-    umask(0);
-
-    // Create new session
-    if (setsid() < 0) {
-        perror("setsid failed");
-        exit(EXIT_FAILURE);
-    }
-
-    // Change working directory
-    if (chdir("/") < 0) {
-        perror("chdir failed");
-        exit(EXIT_FAILURE);
-    }
-
-    // Close standard file descriptors
-    close(STDIN_FILENO);
-    close(STDOUT_FILENO);
-    close(STDERR_FILENO);
-
-    // Reopen to /dev/null
-    freopen("/dev/null", "r", stdin);
-    freopen("/dev/null", "w", stdout);
-    freopen("/dev/null", "w", stderr);
-}
-
 int main(int argc, char *argv[]) {
-
-    setup_signal_handlers();
-    LOG_INIT();
-
     CommandOptions opts = {0};
     parse_command_line(argc, argv, args_callback, &opts);
 
-    // Handle special options
-    if (opts.help) {
-        print_usage(argv[0]);
-        return EXIT_SUCCESS;
-    }
-
-    if (opts.version) {
-        print_version();
-        return EXIT_SUCCESS;
-    }
-
-    if (init_config(opts.config_file) == EXIT_FAILURE) {
-        fprintf(stderr, "Failed to initialize configuration\n");
+    if (is_already_running()) {
+        fprintf(stderr, "LightMail is already running\n");
         return EXIT_FAILURE;
     }
 
-    // Daemonize if requested
-    if (opts.daemon_mode) {
-        daemonize();
+    if (init_config(opts.config_file) == EXIT_FAILURE) {
+        return EXIT_FAILURE;
     }
 
     pid_t pid = fork();
-
     if (pid < 0) {
-        LOGE("Fork failed for IMAP server");
-        perror("fork failed");
-        return 1;
+        perror("fork");
+        return EXIT_FAILURE;
     }
 
-    if (pid == 0) {
-        // CHILD PROCESS → IMAP
-        // start_imap();
-        _exit(0);
+    if (pid > 0) {
+        // Parent exits immediately
+        printf("LightMail started (PID %d)\n", pid);
+        return EXIT_SUCCESS;
     }
 
+    // ---- CHILD (DAEMON) ----
+    umask(0);
 
+    if (setsid() < 0) {
+        _exit(1);
+    }
+
+    chdir("/");
+
+    int fd = open("/dev/null", O_RDWR);
+    dup2(fd, STDIN_FILENO);
+    dup2(fd, STDOUT_FILENO);
+    dup2(fd, STDERR_FILENO);
+    if (fd > 2)
+        close(fd);
+
+    // Now safe to initialize logging & signals
+    setup_signal_handlers();
+    LOG_INIT();
+
+    start_imap();
+
+    // Graceful shutdown
     free_config();
     LOG_CLOSE();
-    return EXIT_SUCCESS;
+    _exit(0);
 }

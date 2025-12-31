@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <crypt.h>
+#include <stdio.h>
 
 // Hash password using bcrypt
 char *create_password(const char *password) {
@@ -9,9 +10,9 @@ char *create_password(const char *password) {
     char salt[30];
     const char *salt_prefix = "$2y$12$"; // bcrypt with cost factor 12
     const char *charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789./";
-    strcpy(salt, salt_prefix);
-    for (int i = 0; i < 22; i++)
-    {
+    /* Use snprintf to avoid buffer overflow and ensure null-termination */
+    snprintf(salt, sizeof(salt), "%s", salt_prefix);
+    for (int i = 0; i < 22; i++) {
         salt[7 + i] = charset[rand() % 64];
     }
     salt[29] = '\0';

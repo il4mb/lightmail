@@ -25,5 +25,13 @@ lightmail_SOURCES = \
 
 lightmail_LDADD = -lmysqlclient -lcurl -lssl -lcrypto -lpthread -lcrypt 
 
-run: lightmail
+setcap:
+	sudo setcap 'cap_net_bind_service=+ep' lightmail
+
+run: lightmail setcap
 	./lightmail -c ../config/lightmail.conf
+
+# Run unit tests
+test:
+	@./tests/run_tests.sh || (echo "Tests failed"; exit 1)
+

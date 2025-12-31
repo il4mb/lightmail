@@ -108,6 +108,11 @@ bool db_update_message_flags(int message_id, const char *flags);
 bool db_delete_message(int message_id);
 int db_get_next_uid(int mailbox_id);
 
+/* Convenience free helpers */
+void db_free_message(Message *m);
+void db_free_mailbox(Mailbox *m);
+void db_free_account(Account *a);
+
 // Domain functions
 Domain* db_get_domain(const char *domain_name);
 bool db_domain_exists(const char *domain_name);

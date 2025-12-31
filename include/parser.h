@@ -4,8 +4,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
-
-#define PATH_MAX 4096
+#include <stdlib.h>
 
 // Trim whitespace from string
 static inline void trim(void *str) {
@@ -115,13 +114,13 @@ static inline void parse_command_line(int argc, char *argv[], cmd_callback_t cal
  * @param callback Function to call for each parsed key-value pair.
  * @param ctx      User-provided context (to avoid global variables).
  */
-static inline int parse_config_file(const char *filepath, cmd_callback_t callback, void *ctx) {
+static inline int parse_config_file(const char *filepath, config_callback_t callback, void *ctx) {
     if (!callback || !filepath)
-        return -1;
+        return EXIT_FAILURE;
 
     FILE *file = fopen(filepath, "r");
     if (!file)
-        return -1;
+        return EXIT_FAILURE;
 
     char line[512];
     char section[64] = "";
@@ -148,12 +147,12 @@ static inline int parse_config_file(const char *filepath, cmd_callback_t callbac
         if (key && value) {
             trim(key);
             trim(value);
-            callback(key, value, ctx);
+            callback(section, key, value, ctx);
         }
     }
 
     fclose(file);
-    return 0;
+    return EXIT_SUCCESS;
 }
 
 #endif

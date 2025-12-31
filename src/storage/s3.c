@@ -106,6 +106,89 @@ char *s3_upload_message(int account_id, int mailbox_id, int message_uid, const c
     return s3_key;
 }
 
+/* Upload message from a FILE* (streaming) to avoid keeping full message in memory */
+char *s3_upload_message_file(int account_id, int mailbox_id, int message_uid, FILE *file, size_t size, const char *content_type) {
+
+    char *s3_key = s3_generate_key(account_id, mailbox_id, message_uid);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        free(s3_key);
+        return NULL;
+    }
+
+    char url[1024];
+    snprintf(url, sizeof(url), "%s/%s/%s", s3.endpoint, s3.bucket, s3_key);
+
+    struct curl_slist *headers = NULL;
+
+    headers = curl_slist_append(headers, "x-amz-content-sha256: UNSIGNED-PAYLOAD");
+    {
+        char ct_header[128];
+        snprintf(ct_header, sizeof(ct_header), "Content-Type: %s", content_type ? content_type : "application/octet-stream");
+        headers = curl_slist_append(headers, ct_header);
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
+    curl_easy_setopt(curl, CURLOPT_READDATA, file);
+    curl_easy_setopt(curl, CURLOPT_INFILESIZE_LARGE, (curl_off_t)size);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+
+    CURLcode res = curl_easy_perform(curl);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        free(s3_key);
+        return NULL;
+    }
+
+    return s3_key;
+}
+
+/* Download S3 object into a temporary file and return FILE* (caller must fclose). Returns NULL on failure. */
+FILE *s3_download_message_file(const char *s3_key, size_t *size) {
+    if (!s3_key)
+        return NULL;
+
+    char url[1024];
+    snprintf(url, sizeof(url), "%s/%s/%s", s3.endpoint, s3.bucket, s3_key);
+
+    FILE *tmp = tmpfile();
+    if (!tmp)
+        return NULL;
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        fclose(tmp);
+        return NULL;
+    }
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, NULL);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, tmp);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        curl_easy_cleanup(curl);
+        fclose(tmp);
+        return NULL;
+    }
+
+    double downloaded = 0.0;
+    curl_easy_getinfo(curl, CURLINFO_SIZE_DOWNLOAD, &downloaded);
+    if (size)
+        *size = (size_t)downloaded;
+
+    curl_easy_cleanup(curl);
+
+    rewind(tmp);
+    return tmp;
+}
+
 char *s3_download_message(const char *s3_key, size_t *size) {
 }
 
@@ -127,9 +210,9 @@ char *sha256_hash(const char *input) {
     SHA256_Update(&sha256, input, strlen(input));
     SHA256_Final(hash, &sha256);
     for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-        sprintf(outputBuffer + (i * 2), "%02x", hash[i]);
+        snprintf(outputBuffer + (i * 2), 3, "%02x", hash[i]);
     }
-    outputBuffer[64] = 0;
+    outputBuffer[64] = '\0';
     return outputBuffer;
 }
 
@@ -157,7 +240,7 @@ char *calculate_signature(const char *to_sign, const char *date, const char *reg
     // 4. Hex encode the final result
     char *signature_hex = malloc(65);
     for (int i = 0; i < 32; i++) {
-        sprintf(signature_hex + (i * 2), "%02x", kFinal[i]);
+        snprintf(signature_hex + (i * 2), 3, "%02x", kFinal[i]);
     }
     signature_hex[64] = '\0';
 

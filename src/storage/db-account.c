@@ -171,3 +171,12 @@ Account *db_create_account(const char *username, const char *domain, const char 
 
     return db_get_account_by_username(username, domain);
 }
+
+/* Free Account and its fields */
+void db_free_account(Account *a) {
+    if (!a) return;
+    free(a->username);
+    free(a->email);
+    if (a->full_name) free(a->full_name);
+    free(a);
+}

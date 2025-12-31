@@ -98,6 +98,15 @@ Mailbox **db_get_mailboxes(int account_id, int *count) {
     db_release_connection(conn);
 
     return mailboxes;
+}
+
+/* Free a Mailbox and its allocated fields */
+void db_free_mailbox(Mailbox *m) {
+    if (!m) return;
+    free(m->name);
+    free(m->flags);
+    free(m->permanent_flags);
+    free(m);
 }   
 
 bool db_create_mailbox(int account_id, const char *name, const char *flags) {

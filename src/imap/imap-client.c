@@ -2,6 +2,8 @@
 #include "imap.h"
 #include "imap-client.h"
 #include "db.h"
+#include "s3.h"
+#include <ctype.h>
 
 // Validate session timeout
 int check_session_timeout(ClientState *client) {
@@ -387,37 +389,37 @@ void handle_status(ClientState *client, const char *tag, const char *args) {
     // Parse requested status items
     char *item = strtok(status_items, " ");
     char response[MAX_RESPONSE_LENGTH];
-    snprintf(response, sizeof(response), "STATUS \"%s\" (", mailbox_name);
+    int pos = snprintf(response, sizeof(response), "STATUS \"%s\" (", mailbox_name);
     char temp[256];
 
     int first = 1;
     while (item) {
         if (!first) {
-            strcat(response, " ");
+            pos += snprintf(response + pos, sizeof(response) - pos, " ");
         }
         first = 0;
 
         if (strcasecmp(item, "MESSAGES") == 0) {
             snprintf(temp, sizeof(temp), "MESSAGES %d", mailbox->total_messages);
-            strcat(response, temp);
+            pos += snprintf(response + pos, sizeof(response) - pos, "%s", temp);
         } else if (strcasecmp(item, "RECENT") == 0) {
             snprintf(temp, sizeof(temp), "RECENT %d", mailbox->recent_messages);
-            strcat(response, temp);
+            pos += snprintf(response + pos, sizeof(response) - pos, "%s", temp);
         } else if (strcasecmp(item, "UIDNEXT") == 0) {
             snprintf(temp, sizeof(temp), "UIDNEXT %d", mailbox->uid_next);
-            strcat(response, temp);
+            pos += snprintf(response + pos, sizeof(response) - pos, "%s", temp);
         } else if (strcasecmp(item, "UIDVALIDITY") == 0) {
             snprintf(temp, sizeof(temp), "UIDVALIDITY %d", mailbox->uid_validity);
-            strcat(response, temp);
+            pos += snprintf(response + pos, sizeof(response) - pos, "%s", temp);
         } else if (strcasecmp(item, "UNSEEN") == 0 && mailbox->unseen_messages >= 0) {
             snprintf(temp, sizeof(temp), "UNSEEN %d", mailbox->unseen_messages);
-            strcat(response, temp);
+            pos += snprintf(response + pos, sizeof(response) - pos, "%s", temp);
         }
 
         item = strtok(NULL, " ");
     }
 
-    strcat(response, ")");
+    pos += snprintf(response + pos, sizeof(response) - pos, ")");
     send_untagged(client, response);
 
     free(mailbox->name);
@@ -528,6 +530,13 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
         return;
     }
 
+    // Enforce max message size
+    const ImapConfig *cfg = get_config_imap();
+    if (message_size > cfg->max_message_size) {
+        send_tagged_no(client, tag, "Message too large");
+        return;
+    }
+
     // Get mailbox
     Mailbox *mailbox = db_get_mailbox(client->account->id, mailbox_name);
     if (!mailbox) {
@@ -538,9 +547,11 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
     // Send continuation response for literal data
     send_response(client, "+ Ready for literal data\r\n");
 
-    // Read message data
-    char *message_data = malloc(message_size + 1);
-    if (!message_data) {
+    size_t buf_size = get_config_imap()->buffer_size;
+    if (buf_size < 1024) buf_size = 8192;
+
+    char *buffer = malloc(buf_size);
+    if (!buffer) {
         free(mailbox->name);
         free(mailbox->flags);
         free(mailbox->permanent_flags);
@@ -549,31 +560,116 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
         return;
     }
 
+    FILE *tmp = tmpfile();
+    char *message_data = NULL; /* fallback if tmpfile() fails */
     size_t bytes_read = 0;
-    while (bytes_read < message_size) {
-        ssize_t n;
-        if (client->use_ssl && client->ssl) {
-            n = SSL_read(client->ssl, message_data + bytes_read, message_size - bytes_read);
-        } else {
-            n = recv(client->socket, message_data + bytes_read, message_size - bytes_read, 0);
-        }
+    const size_t header_limit = 16384;
+    char header_buf[header_limit];
+    size_t header_len = 0;
 
-        if (n <= 0) {
-            free(message_data);
-            free(mailbox->name);
-            free(mailbox->flags);
-            free(mailbox->permanent_flags);
-            free(mailbox);
+    if (!tmp) {
+        /* Fallback: allocate in memory (last resort) */
+        message_data = malloc(message_size + 1);
+        if (!message_data) {
+            free(buffer);
+            db_free_mailbox(mailbox);
+            send_tagged_no(client, tag, "Server error");
             return;
         }
-        bytes_read += n;
+
+        while (bytes_read < message_size) {
+            ssize_t n;
+            size_t to_read = message_size - bytes_read;
+            if (to_read > (ssize_t)buf_size)
+                to_read = buf_size;
+
+            if (client->use_ssl && client->ssl) {
+                n = SSL_read(client->ssl, message_data + bytes_read, to_read);
+            } else {
+                n = recv(client->socket, message_data + bytes_read, to_read, 0);
+            }
+
+            if (n <= 0) {
+                free(message_data);
+                free(buffer);
+                free(mailbox->name);
+                free(mailbox->flags);
+                free(mailbox->permanent_flags);
+                free(mailbox);
+                return;
+            }
+
+            /* Save headers into header_buf for minimal parsing */
+            if (header_len < header_limit) {
+                size_t copy_n = n;
+                if (header_len + copy_n > header_limit)
+                    copy_n = header_limit - header_len;
+                memcpy(header_buf + header_len, message_data + bytes_read, copy_n);
+                header_len += copy_n;
+            }
+
+            bytes_read += n;
+        }
+        message_data[message_size] = '\0';
+    } else {
+        while (bytes_read < message_size) {
+            ssize_t n;
+            size_t to_read = message_size - bytes_read;
+            if (to_read > buf_size)
+                to_read = buf_size;
+
+            if (client->use_ssl && client->ssl) {
+                n = SSL_read(client->ssl, buffer, to_read);
+            } else {
+                n = recv(client->socket, buffer, to_read, 0);
+            }
+
+            if (n <= 0) {
+                fclose(tmp);
+                free(buffer);
+                free(mailbox->name);
+                free(mailbox->flags);
+                free(mailbox->permanent_flags);
+                free(mailbox);
+                return;
+            }
+
+            if (fwrite(buffer, 1, n, tmp) != (size_t)n) {
+                fclose(tmp);
+                free(buffer);
+                free(mailbox->name);
+                free(mailbox->flags);
+                free(mailbox->permanent_flags);
+                free(mailbox);
+                send_tagged_no(client, tag, "Failed to write to temporary storage");
+                return;
+            }
+
+            if (header_len < header_limit) {
+                size_t copy_n = n;
+                if (header_len + copy_n > header_limit)
+                    copy_n = header_limit - header_len;
+                memcpy(header_buf + header_len, buffer, copy_n);
+                header_len += copy_n;
+            }
+
+            bytes_read += n;
+        }
+        free(buffer);
+        rewind(tmp);
     }
-    message_data[message_size] = '\0';
+
+    /* Ensure header buffer is NUL-terminated for parsing */
+    if (header_len < header_limit)
+        header_buf[header_len] = '\0';
+    else
+        header_buf[header_limit - 1] = '\0';
 
     // Get next UID
     int next_uid = db_get_next_uid(mailbox->id);
     if (next_uid < 0) {
-        free(message_data);
+        if (tmp) fclose(tmp);
+        if (message_data) free(message_data);
         free(mailbox->name);
         free(mailbox->flags);
         free(mailbox->permanent_flags);
@@ -582,12 +678,17 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
         return;
     }
 
-    // Upload message to S3
-    char *s3_key = s3_upload_message(client->account->id, mailbox->id, next_uid,
-                                     message_data, message_size, "message/rfc822");
+    /* Upload message to S3. Prefer streaming from temporary file to avoid holding the whole message in memory. */
+    char *s3_key = NULL;
+    if (tmp) {
+        s3_key = s3_upload_message_file(client->account->id, mailbox->id, next_uid, tmp, message_size, "message/rfc822");
+        fclose(tmp);
+    } else {
+        s3_key = s3_upload_message(client->account->id, mailbox->id, next_uid, message_data, message_size, "message/rfc822");
+    }
 
     if (!s3_key) {
-        free(message_data);
+        if (message_data) free(message_data);
         free(mailbox->name);
         free(mailbox->flags);
         free(mailbox->permanent_flags);
@@ -600,7 +701,7 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
     Message *message = malloc(sizeof(Message));
     if (!message) {
         free(s3_key);
-        free(message_data);
+        if (message_data) free(message_data);
         free(mailbox->name);
         free(mailbox->flags);
         free(mailbox->permanent_flags);
@@ -615,16 +716,28 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
     message->flags = strdup(flags);
     message->size = message_size;
 
-    // Parse basic envelope info from message
-    // In production, implement full MIME parsing
-    char *from = strstr(message_data, "\nFrom:");
-    char *subject = strstr(message_data, "\nSubject:");
+    /* Parse basic envelope info from the saved header buffer or fallback to the in-memory message */
+    char *from = NULL;
+    char *subject = NULL;
+
+    if (header_len > 0) {
+        from = strstr(header_buf, "\nFrom:");
+        if (!from) from = strstr(header_buf, "\r\nFrom:");
+        subject = strstr(header_buf, "\nSubject:");
+        if (!subject) subject = strstr(header_buf, "\r\nSubject:");
+    }
+
+    if (!from && message_data)
+        from = strstr(message_data, "\nFrom:");
+    if (!subject && message_data)
+        subject = strstr(message_data, "\nSubject:");
 
     if (from) {
         from += 6; // Skip "From:"
         while (*from && isspace(*from))
             from++;
         char *end = strchr(from, '\n');
+        if (!end) end = strchr(from, '\r');
         if (end) {
             int len = end - from;
             message->envelope_from = malloc(len + 1);
@@ -642,6 +755,7 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
         while (*subject && isspace(*subject))
             subject++;
         char *end = strchr(subject, '\n');
+        if (!end) end = strchr(subject, '\r');
         if (end) {
             int len = end - subject;
             message->envelope_subject = malloc(len + 1);
@@ -750,10 +864,10 @@ void handle_fetch(ClientState *client, const char *tag, const char *args) {
     for (int i = start - 1; i < end && i < count; i++) {
         Message *msg = messages[i];
 
-        // Fetch body from S3
-        size_t body_size;
-        char *body = s3_download_message(msg->body_s3_key, &body_size);
-        if (!body) {
+        // Fetch body from S3 using streaming to a temporary file
+        size_t body_size = 0;
+        FILE *tmp = s3_download_message_file(msg->body_s3_key, &body_size);
+        if (!tmp) {
             continue;
         }
 
@@ -767,8 +881,18 @@ void handle_fetch(ClientState *client, const char *tag, const char *args) {
                      msg->uid, msg->flags, msg->size, (unsigned long)body_size);
             send_untagged(client, response);
 
-            // Send body
-            send_response(client, body);
+            // Stream body from file
+            rewind(tmp);
+            size_t bufsize = get_config_imap()->buffer_size;
+            if (bufsize < 1024) bufsize = 8192;
+            char *buf = malloc(bufsize);
+            if (buf) {
+                size_t n;
+                while ((n = fread(buf, 1, bufsize, tmp)) > 0) {
+                    send_bytes(client, buf, n);
+                }
+                free(buf);
+            }
             send_response(client, "\r\n)");
 
         } else if (strstr(items, "BODY[HEADER]")) {
@@ -778,7 +902,17 @@ void handle_fetch(ClientState *client, const char *tag, const char *args) {
                      msg->uid, (unsigned long)body_size);
             send_untagged(client, response);
 
-            send_response(client, body);
+            rewind(tmp);
+            size_t bufsize = get_config_imap()->buffer_size;
+            if (bufsize < 1024) bufsize = 8192;
+            char *buf = malloc(bufsize);
+            if (buf) {
+                size_t n;
+                while ((n = fread(buf, 1, bufsize, tmp)) > 0) {
+                    send_bytes(client, buf, n);
+                }
+                free(buf);
+            }
             send_response(client, "\r\n)");
 
         } else if (strstr(items, "RFC822.SIZE")) {
@@ -805,17 +939,10 @@ void handle_fetch(ClientState *client, const char *tag, const char *args) {
             send_untagged(client, response);
         }
 
-        free(body);
+        if (tmp) fclose(tmp);
 
         // Free message resources
-        free(msg->flags);
-        free(msg->envelope_from);
-        free(msg->envelope_to);
-        free(msg->envelope_subject);
-        free(msg->body_s3_key);
-        free(msg->mime_type);
-        free(msg->encoding);
-        free(msg);
+        db_free_message(msg);
     }
 
     free(messages);
@@ -970,10 +1097,10 @@ void handle_search(ClientState *client, const char *tag, const char *args) {
 
     // Build list of UIDs
     char uid_list[1024] = "";
+    size_t uid_pos = 0;
     for (int i = 0; i < count; i++) {
-        char temp[32];
-        snprintf(temp, sizeof(temp), "%d ", messages[i]->uid);
-        strcat(uid_list, temp);
+        int n = snprintf(uid_list + uid_pos, sizeof(uid_list) - uid_pos, "%d ", messages[i]->uid);
+        if (n > 0) uid_pos += (size_t)n;
 
         // Free message resources
         free(messages[i]->flags);
@@ -984,12 +1111,14 @@ void handle_search(ClientState *client, const char *tag, const char *args) {
         free(messages[i]->mime_type);
         free(messages[i]->encoding);
         free(messages[i]);
+
+        if (uid_pos >= sizeof(uid_list) - 1) break; /* avoid overflow */
     }
     free(messages);
 
     // Remove trailing space
-    if (strlen(uid_list) > 0) {
-        uid_list[strlen(uid_list) - 1] = '\0';
+    if (uid_pos > 0 && uid_list[uid_pos - 1] == ' ') {
+        uid_list[uid_pos - 1] = '\0';
     }
 
     // Send search results
@@ -1034,9 +1163,7 @@ void handle_starttls(ClientState *client, const char *tag, SSL_CTX *ssl_ctx) {
 void *handle_client(void *arg) {
 
     const ImapConfig *cfg = get_config_imap();
-    ClientState *client = (ClientState *)malloc(sizeof(ClientState));
-    memcpy(client, arg, sizeof(ClientState));
-    free(arg);
+    ClientState *client = (ClientState *)arg;
 
     // Initialize client state
     client->ssl = NULL;
@@ -1130,10 +1257,7 @@ void *handle_client(void *arg) {
         } else if (strcasecmp(command, "CLOSE") == 0) {
             // Clear current mailbox
             if (client->current_mailbox) {
-                free(client->current_mailbox->name);
-                free(client->current_mailbox->flags);
-                free(client->current_mailbox->permanent_flags);
-                free(client->current_mailbox);
+                db_free_mailbox(client->current_mailbox);
                 client->current_mailbox = NULL;
                 client->current_mailbox_name[0] = '\0';
             }
@@ -1167,21 +1291,18 @@ void *handle_client(void *arg) {
     }
 
     if (client->account) {
-        free(client->account->username);
-        free(client->account->email);
-        if (client->account->full_name)
-            free(client->account->full_name);
-        free(client->account);
+        db_free_account(client->account);
     }
 
     if (client->current_mailbox) {
-        free(client->current_mailbox->name);
-        free(client->current_mailbox->flags);
-        free(client->current_mailbox->permanent_flags);
-        free(client->current_mailbox);
+        db_free_mailbox(client->current_mailbox);
     }
 
     close(client->socket);
+
+    /* Decrement server client count */
+    imap_decrement_client();
+
     free(client);
 
     return NULL;
