@@ -1,5 +1,6 @@
 #include "s3.h"
 #include "conf.h"
+#include "metrics.h"
 #include <curl/curl.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
@@ -108,6 +109,8 @@ char *s3_upload_message(int account_id, int mailbox_id, int message_uid, const c
 
 /* Upload message from a FILE* (streaming) to avoid keeping full message in memory */
 char *s3_upload_message_file(int account_id, int mailbox_id, int message_uid, FILE *file, size_t size, const char *content_type) {
+    struct timespec _s3_start, _s3_end;
+    clock_gettime(CLOCK_MONOTONIC, &_s3_start);
 
     char *s3_key = s3_generate_key(account_id, mailbox_id, message_uid);
 
@@ -139,6 +142,10 @@ char *s3_upload_message_file(int account_id, int mailbox_id, int message_uid, FI
 
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
+
+    clock_gettime(CLOCK_MONOTONIC, &_s3_end);
+    uint64_t _s3_ms = (uint64_t)((_s3_end.tv_sec - _s3_start.tv_sec) * 1000 + (_s3_end.tv_nsec - _s3_start.tv_nsec) / 1000000);
+    metrics_record_s3_upload_ms(_s3_ms);
 
     if (res != CURLE_OK) {
         free(s3_key);
@@ -190,9 +197,49 @@ FILE *s3_download_message_file(const char *s3_key, size_t *size) {
 }
 
 char *s3_download_message(const char *s3_key, size_t *size) {
+    // Convenience wrapper that returns the content as a malloc'ed buffer
+    FILE *f = s3_download_message_file(s3_key, size);
+    if (!f) return NULL;
+
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    rewind(f);
+
+    char *buf = malloc(fsize + 1);
+    if (!buf) { fclose(f); return NULL; }
+
+    fread(buf, 1, fsize, f);
+    buf[fsize] = '\0';
+    fclose(f);
+    if (size) *size = (size_t)fsize;
+    return buf;
 }
 
 bool s3_delete_message(const char *s3_key) {
+    if (!s3_key) return false;
+
+    char url[1024];
+    snprintf(url, sizeof(url), "%s/%s/%s", s3.endpoint, s3.bucket, s3_key);
+
+    CURL *curl = curl_easy_init();
+    if (!curl) return false;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+    curl_easy_setopt(curl, CURLOPT_NOBODY, 1L);
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+
+    CURLcode res = curl_easy_perform(curl);
+    if (res != CURLE_OK) {
+        curl_easy_cleanup(curl);
+        return false;
+    }
+
+    long response_code = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
+    curl_easy_cleanup(curl);
+
+    return (response_code == 200 || response_code == 204);
 }
 
 // Generate S3 key

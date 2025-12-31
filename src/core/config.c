@@ -15,6 +15,7 @@ static char *resolve_config_path(const char *path);
 
 /* Global configuration instance */
 static ConfigCollection cfg = {0};
+static char config_file_path[PATH_MAX] = "";
 
 /* ====================== INTERNAL FUNCTIONS ====================== */
 static config_callback_t config_entry_iterator(const char *section, const char *key, const char *value, void *ctx) {
@@ -140,6 +141,13 @@ int init_config(const char *config_path) {
 
     LOGD("Config file parsed successfully\n");
 
+    /* Apply logging configuration immediately */
+    log_reload_config();
+
+    // Keep a copy of the normalized path so reloads can use it
+    strncpy(config_file_path, normalized_path, sizeof(config_file_path)-1);
+    config_file_path[sizeof(config_file_path)-1] = '\0';
+
     // Clean up
     free(normalized_path);
 
@@ -150,6 +158,11 @@ int init_config(const char *config_path) {
     }
 
     return EXIT_SUCCESS;
+}
+
+const char *get_loaded_config_path(void) {
+    if (config_file_path[0] == '\0') return NULL;
+    return config_file_path;
 }
 
 void set_config_value(const char *section, const char *key, const char *value) {

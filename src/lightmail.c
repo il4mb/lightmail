@@ -3,12 +3,17 @@
 #include "log.h"
 #include "parser.h"
 #include "shutdown.h"
+#include "pop3.h"
+#include "lmtp.h"
+#include "lmtp_queue.h"
+#include "metrics.h"
 #include <dlfcn.h>
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 
 // Command line options structure
 typedef struct {
@@ -39,7 +44,7 @@ void args_callback(const char *k, const char *v, void *ctx) {
     case 'V':
         s->version = 1;
         break;
-    case 'reload':
+    case 'r':
         s->reload = 1;
         break;
     default:
@@ -131,6 +136,33 @@ int main(int argc, char *argv[]) {
     // Now safe to initialize logging & signals
     setup_signal_handlers();
     LOG_INIT();
+
+    /* Start POP3 service (placeholder) */
+    pthread_t pop3_thread;
+    if (pthread_create(&pop3_thread, NULL, (void *(*)(void *))start_pop3, NULL) == 0) {
+        pthread_detach(pop3_thread);
+    }
+
+    /* Start LMTP service */
+    pthread_t lmtp_thread;
+    if (pthread_create(&lmtp_thread, NULL, (void *(*)(void *))start_lmtp, NULL) == 0) {
+        pthread_detach(lmtp_thread);
+    }
+
+    /* Start metrics server if configured */
+    int metrics_port = get_config_int("service", "metrics_port", 0);
+    if (metrics_port > 0) {
+        metrics_init(metrics_port);
+    }
+
+    /* Start memory sampler if configured */
+    int mem_interval = get_config_int("service", "memory_sampler_interval", 0);
+    if (mem_interval > 0) {
+        memory_sampler_init(mem_interval);
+    }
+
+    /* Start LMTP queue manager */
+    lmtp_queue_init(get_config_int("service", "lmtp_queue_capacity", 256));
 
     start_imap();
 

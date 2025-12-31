@@ -18,12 +18,19 @@ lightmail_SOURCES = \
     src/storage/db-mailbox.c \
     src/storage/db-message.c \
     src/storage/s3.c \
+    src/lmtp/lmtp.c \
+    src/lmtp/lmtp_session.c \
     src/imap/imap.c \
     src/imap/imap-client.c \
     src/imap/imap-send.c \
-    src/imap/imap-ssl.c 
+    src/imap/imap-ssl.c \
+    src/log/log.c \
+    src/pop3/pop3.c \
+    src/metrics/metrics.c \
+    src/metrics/memory_sampler.c \
+    src/lmtp/queue.c 
 
-lightmail_LDADD = -lmysqlclient -lcurl -lssl -lcrypto -lpthread -lcrypt 
+lightmail_LDADD = -lmysqlclient -lcurl -lpthread -lcrypt -lssl -lcrypto 
 
 setcap:
 	sudo setcap 'cap_net_bind_service=+ep' lightmail

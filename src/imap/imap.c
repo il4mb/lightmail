@@ -6,6 +6,7 @@
 #include "mailbox.h"
 #include "s3.h"
 #include "shutdown.h"
+#include "metrics.h"
 
 #include <arpa/inet.h>
 #include <conf.h>
@@ -72,6 +73,10 @@ int imap_increment_client(void) {
     }
     current_clients++;
     pthread_mutex_unlock(&clients_lock);
+
+    /* Metrics: increment IMAP sessions */
+    metrics_inc_imap_sessions();
+
     return 1;
 }
 
@@ -79,6 +84,9 @@ void imap_decrement_client(void) {
     pthread_mutex_lock(&clients_lock);
     if (current_clients > 0) current_clients--;
     pthread_mutex_unlock(&clients_lock);
+
+    /* Metrics: decrement IMAP sessions */
+    metrics_dec_imap_sessions();
 }
 
 int start_imap() {
@@ -203,6 +211,20 @@ int start_imap() {
     while (1) {
         struct sockaddr_in client_addr;
         socklen_t client_len = sizeof(client_addr);
+
+        if (is_reload_requested()) {
+            const char *cfgpath = get_loaded_config_path();
+            if (cfgpath) {
+                LOGI("Reloading configuration from %s", cfgpath);
+                if (init_config(cfgpath) == EXIT_SUCCESS) {
+                    log_reload_config();
+                    LOGI("Configuration reloaded");
+                } else {
+                    LOGW("Configuration reload failed for %s", cfgpath);
+                }
+            }
+            clear_reload_request();
+        }
 
         int client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_len);
         if (client_socket < 0) {

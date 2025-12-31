@@ -1,6 +1,8 @@
 #include "db.h"
 #include "conf.h"
 #include "password.h"
+#include "metrics.h"
+#include <time.h>
 #include <mysql/mysql.h>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
@@ -135,7 +137,15 @@ void db_cleanup(void) {
 
 // Execute query without result
 bool db_execute_query(MYSQL *conn, const char *query) {
-    if (mysql_query(conn, query) != 0) {
+    struct timespec _db_q_start, _db_q_end;
+    clock_gettime(CLOCK_MONOTONIC, &_db_q_start);
+    int _rc = mysql_query(conn, query);
+    clock_gettime(CLOCK_MONOTONIC, &_db_q_end);
+
+    uint64_t _db_ms = (uint64_t)((_db_q_end.tv_sec - _db_q_start.tv_sec) * 1000 + (_db_q_end.tv_nsec - _db_q_start.tv_nsec) / 1000000);
+    metrics_record_mysql_query_ms(_db_ms);
+
+    if (_rc != 0) {
         fprintf(stderr, "Query failed: %s\n", mysql_error(conn));
         return false;
     }
@@ -144,7 +154,15 @@ bool db_execute_query(MYSQL *conn, const char *query) {
 
 // Execute query and return result
 MYSQL_RES *db_execute_query_result(MYSQL *conn, const char *query) {
-    if (mysql_query(conn, query) != 0) {
+    struct timespec _db_q_start, _db_q_end;
+    clock_gettime(CLOCK_MONOTONIC, &_db_q_start);
+    int _rc = mysql_query(conn, query);
+    clock_gettime(CLOCK_MONOTONIC, &_db_q_end);
+
+    uint64_t _db_ms = (uint64_t)((_db_q_end.tv_sec - _db_q_start.tv_sec) * 1000 + (_db_q_end.tv_nsec - _db_q_start.tv_nsec) / 1000000);
+    metrics_record_mysql_query_ms(_db_ms);
+
+    if (_rc != 0) {
         fprintf(stderr, "Query failed: %s\n", mysql_error(conn));
         return NULL;
     }

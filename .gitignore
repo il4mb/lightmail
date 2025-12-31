@@ -30,3 +30,11 @@
 !readme.md
 !.clang-format
 !LICENSE
+!AUTHORS
+!CHANGELOG.md
+!CONTRIBUTING.md
+!CODE_OF_CONDUCT.md
+!TODO.md
+!INSTALL.md
+!tests/
+!test_imap.sh

@@ -45,6 +45,9 @@ void get_config_section(const char *section, config_section_callback_t callback,
 void iterate_config_sections(config_section_iterator_t iterator, void *ctx);
 void free_config(void);
 
+/* Path to the currently loaded configuration file (returns NULL if none) */
+const char *get_loaded_config_path(void);
+
 /* Other API */
 char *normalize_path(const char *path);
 static int is_port_available(int port) {

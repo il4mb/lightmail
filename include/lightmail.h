@@ -3,6 +3,8 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <unistd.h>
+#include <stdio.h>
+#include <string.h>
 
 #define PID_FILE "/tmp/lightmail.pid"
 
