@@ -89,6 +89,82 @@ void imap_decrement_client(void) {
     metrics_dec_imap_sessions();
 }
 
+/* Helper context passed to the IMAP server thread */
+typedef struct {
+    int server_socket;
+    int ssl_server_socket;
+    SSL_CTX *ssl_ctx;
+} ImapServerContext;
+
+static void *imap_server_loop(void *arg) {
+    ImapServerContext *ctx = (ImapServerContext *)arg;
+    int server_socket = ctx->server_socket;
+    int ssl_server_socket = ctx->ssl_server_socket;
+    SSL_CTX *ssl_ctx = ctx->ssl_ctx;
+
+    pthread_t thread_id;
+
+    IS_IMAP_RUNNING = true;
+
+    /* client_addr is used per-connection below */
+    LOGI("IMAP server loop started");
+
+    while (1) {
+        struct sockaddr_in client_addr_local;
+        socklen_t client_len_local = sizeof(client_addr_local);
+
+        int client_socket = accept(server_socket, (struct sockaddr *)&client_addr_local, &client_len_local);
+        if (client_socket < 0) {
+            perror("Accept failed");
+            LOGE("Failed to accept connection");
+            continue;
+        }
+
+        // Create client state
+        ClientState *client_state = malloc(sizeof(ClientState));
+        if (!client_state) {
+            close(client_socket);
+            continue;
+        }
+
+        client_state->socket = client_socket;
+        client_state->ssl = NULL;
+        client_state->use_ssl = 0;
+        inet_ntop(AF_INET, &client_addr_local.sin_addr, client_state->client_ip, INET6_ADDRSTRLEN);
+        client_state->client_port = ntohs(client_addr_local.sin_port);
+
+        printf("New connection from %s:%d\n", client_state->client_ip, client_state->client_port);
+        LOGI("New connection from %s:%d", client_state->client_ip, client_state->client_port);
+
+        // Enforce max clients
+        if (!imap_increment_client()) {
+            LOGW("Rejecting connection from %s:%d: server busy", client_state->client_ip, client_state->client_port);
+            free(client_state);
+            close(client_socket);
+            continue;
+        }
+
+        // Create thread for client
+        if (pthread_create(&thread_id, NULL, handle_client, client_state) != 0) {
+            close(client_socket);
+            imap_decrement_client();
+            free(client_state);
+            continue;
+        }
+        pthread_detach(thread_id);
+    }
+
+    /* cleanup */
+    if (server_socket >= 0) close(server_socket);
+    if (ssl_server_socket >= 0) close(ssl_server_socket);
+    if (ssl_ctx) SSL_CTX_free(ssl_ctx);
+    free(ctx);
+
+    LOGI("IMAP server loop stopped");
+    IS_IMAP_RUNNING = false;
+    return NULL;
+}
+
 int start_imap() {
 
     get_config_section("imap", imap_config_callback, &cfg);
@@ -206,77 +282,26 @@ int start_imap() {
         }
     }
 
-    // Accept connections
-    while (1) {
-        struct sockaddr_in client_addr;
-        socklen_t client_len = sizeof(client_addr);
-
-        if (is_reload_requested()) {
-            const char *cfgpath = get_loaded_config_path();
-            if (cfgpath) {
-                LOGI("Reloading configuration from %s", cfgpath);
-                if (init_config(cfgpath) == EXIT_SUCCESS) {
-                    log_reload_config();
-                    LOGI("Configuration reloaded");
-                } else {
-                    LOGW("Configuration reload failed for %s", cfgpath);
-                }
-            }
-            clear_reload_request();
-        }
-
-        int client_socket = accept(server_socket, (struct sockaddr *)&client_addr, &client_len);
-        if (client_socket < 0) {
-            perror("Accept failed");
-            LOGE("Failed to accept connection");
-            continue;
-        }
-
-        // Create client state
-        ClientState *client_state = malloc(sizeof(ClientState));
-        if (!client_state) {
-            close(client_socket);
-            continue;
-        }
-
-        client_state->socket = client_socket;
-        client_state->ssl = NULL;
-        client_state->use_ssl = 0;
-        inet_ntop(AF_INET, &client_addr.sin_addr, client_state->client_ip, INET6_ADDRSTRLEN);
-        client_state->client_port = ntohs(client_addr.sin_port);
-
-        printf("New connection from %s:%d\n", client_state->client_ip, client_state->client_port);
-        LOGI("New connection from %s:%d", client_state->client_ip, client_state->client_port);
-
-        // Enforce max clients
-        if (!imap_increment_client()) {
-            LOGW("Rejecting connection from %s:%d: server busy", client_state->client_ip, client_state->client_port);
-            free(client_state);
-            close(client_socket);
-            continue;
-        }
-
-        // Create thread for client
-        if (pthread_create(&thread_id, NULL, handle_client, client_state) != 0) {
-            perror("Thread creation failed");
-            LOGE("Failed to create thread for client");
-            imap_decrement_client();
-            free(client_state);
-            close(client_socket);
-            continue;
-        }
-
-        pthread_detach(thread_id);
+    /* spawn background accept loop so start_imap can return success to the caller */
+    ImapServerContext *ctx = malloc(sizeof(ImapServerContext));
+    if (!ctx) {
+        if (server_socket >= 0) close(server_socket);
+        if (ssl_server_socket >= 0) close(ssl_server_socket);
+        if (ssl_ctx) SSL_CTX_free(ssl_ctx);
+        return 1;
     }
+    ctx->server_socket = server_socket;
+    ctx->ssl_server_socket = ssl_server_socket;
+    ctx->ssl_ctx = ssl_ctx;
 
-    // Cleanup
-    close(server_socket);
-    if (ssl_server_socket >= 0) {
-        close(ssl_server_socket);
+    if (pthread_create(&thread_id, NULL, imap_server_loop, ctx) != 0) {
+        if (server_socket >= 0) close(server_socket);
+        if (ssl_server_socket >= 0) close(ssl_server_socket);
+        if (ssl_ctx) SSL_CTX_free(ssl_ctx);
+        free(ctx);
+        return 1;
     }
-    if (ssl_ctx) {
-        SSL_CTX_free(ssl_ctx);
-    }
+    pthread_detach(thread_id);
 
     return 0;
 }

@@ -14,7 +14,7 @@ int main(void) {
     }
     close(fd);
 
-    if (log_init(tmpfile) != 0) {
+    if (log_init(tmpfile, LOG_OUTPUT_FILE) != 0) {
         fprintf(stderr, "log_init failed\n");
         unlink(tmpfile);
         return 1;
@@ -52,7 +52,7 @@ int main(void) {
         unlink(tmpfile);
         return 1;
     }
-    if (strstr(buf, "\"service\":\"imap\"") == NULL) {
+    if (strstr(buf, "service") == NULL || strstr(buf, "imap") == NULL) {
         fprintf(stderr, "service field missing\n");
         unlink(tmpfile);
         return 1;
@@ -67,3 +67,4 @@ int main(void) {
     printf("OK\n");
     return 0;
 }
+

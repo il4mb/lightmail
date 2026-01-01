@@ -95,20 +95,31 @@ void handle_login(ClientState *client, const char *tag, const char *args) {
     }
 
     // Extract domain from username (format: user@domain or just user)
-    char *domain = "example.com"; // Default domain
+    char domain[256] = {0};
     char user_only[256];
-    
-    strncpy(user_only, username, sizeof(user_only));
+
+    strncpy(user_only, username, sizeof(user_only) - 1);
+    user_only[sizeof(user_only) - 1] = '\0';
 
     char *at_sign = strchr(user_only, '@');
     if (at_sign) {
+        /* copy domain part and truncate username */
+        strncpy(domain, at_sign + 1, sizeof(domain) - 1);
+        domain[sizeof(domain) - 1] = '\0';
         *at_sign = '\0';
-        domain = at_sign + 1;
+    } else {
+        domain[0] = '\0';
     }
 
-    // Get account from database
-    Account *account = db_get_account_by_username(user_only, domain);
+    // Get account from database (pass original username as stored may include domain)
+    Account *account = db_get_account_by_username(username);
     if (!account) {
+        /* Debug: write missing account info to tmp file for local troubleshooting */
+        FILE *fp = fopen("/tmp/imap-debug.log", "a");
+        if (fp) {
+            fprintf(fp, "LOGIN: account not found for username='%s' domain='%s' from_ip=%s\n", username, domain[0] ? domain : "(none)", client->client_ip);
+            fclose(fp);
+        }
         metrics_inc_auth_failures();
         send_tagged_no(client, tag, "LOGIN failed");
         return;
@@ -117,13 +128,15 @@ void handle_login(ClientState *client, const char *tag, const char *args) {
     // Verify password
     if (!db_verify_password(account, password)) {
         /* Log failed login */
-        log_emit(LOG_LEVEL_WARN, "auth", account->email, NULL, "LOGIN failed for user=%s from_ip=%s", account->email, client->client_ip);
+        log_emit(LOG_LEVEL_WARN, "auth", account->username, NULL, "LOGIN failed for user=%s from_ip=%s", account->username, client->client_ip);
+        /* Debug: write failed password attempt to tmp file */
+        FILE *fp = fopen("/tmp/imap-debug.log", "a");
+        if (fp) {
+            fprintf(fp, "LOGIN: password verification failed for username='%s' email='%s' from_ip=%s\n", username, account->username ? account->username : "(nil)", client->client_ip);
+            fclose(fp);
+        }
         metrics_inc_auth_failures();
-        free(account->username);
-        free(account->email);
-        if (account->full_name)
-            free(account->full_name);
-        free(account);
+        db_free_account(account);
         send_tagged_no(client, tag, "LOGIN failed");
         return;
     }
@@ -138,7 +151,14 @@ void handle_login(ClientState *client, const char *tag, const char *args) {
     snprintf(client->session_id, sizeof(client->session_id), "%.32s-%.32s-%ld", user_only, domain, (long)time(NULL));
 
     /* Log successful login */
-    log_emit(LOG_LEVEL_INFO, "auth", client->account ? client->account->email : NULL, client->session_id, "LOGIN success from_ip=%s", client->client_ip);
+    log_emit(LOG_LEVEL_INFO, "auth", client->account ? client->account->username : NULL, client->session_id, "LOGIN success from_ip=%s", client->client_ip);
+
+    /* Debug: record authenticated account */
+    FILE *fp = fopen("/tmp/imap-debug.log", "a");
+    if (fp) {
+        fprintf(fp, "LOGIN SUCCESS: id=%d username=%s email=%s\n", client->account->id, client->account->username ? client->account->username : "(nil)", client->account->username ? client->account->username : "(nil)");
+        fclose(fp);
+    }
 
     send_tagged_ok(client, tag, "LOGIN completed");
 }
@@ -175,7 +195,7 @@ void handle_select(ClientState *client, const char *tag, const char *mailbox_nam
     strncpy(client->current_mailbox_name, mailbox_name, sizeof(client->current_mailbox_name) - 1);
 
     /* Log mailbox selection */
-    log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->email : NULL, client->session_id, "SELECT mailbox=%s total=%d unseen=%d", mailbox_name, mailbox->total_messages, mailbox->unseen_messages);
+    log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->username : NULL, client->session_id, "SELECT mailbox=%s total=%d unseen=%d", mailbox_name, mailbox->total_messages, mailbox->unseen_messages);
 
     // Send mailbox status
     char response[MAX_RESPONSE_LENGTH];
@@ -246,10 +266,10 @@ void handle_create(ClientState *client, const char *tag, const char *mailbox_nam
 
     // Create mailbox in database
     if (db_create_mailbox(client->account->id, mailbox_name, "\\Answered \\Flagged \\Deleted \\Seen \\Draft")) {
-        log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->email : NULL, client->session_id, "CREATE mailbox=%s", mailbox_name);
+        log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->username : NULL, client->session_id, "CREATE mailbox=%s", mailbox_name);
         send_tagged_ok(client, tag, "CREATE completed");
     } else {
-        log_emit(LOG_LEVEL_ERROR, "imap", client->account ? client->account->email : NULL, client->session_id, "CREATE failed mailbox=%s", mailbox_name);
+        log_emit(LOG_LEVEL_ERROR, "imap", client->account ? client->account->username : NULL, client->session_id, "CREATE failed mailbox=%s", mailbox_name);
         send_tagged_no(client, tag, "CREATE failed");
     }
 }
@@ -290,10 +310,10 @@ void handle_delete(ClientState *client, const char *tag, const char *mailbox_nam
 
     // Delete mailbox from database
     if (db_delete_mailbox(mailbox->id)) {
-        log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->email : NULL, client->session_id, "DELETE mailbox=%s", mailbox_name);
+        log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->username : NULL, client->session_id, "DELETE mailbox=%s", mailbox_name);
         send_tagged_ok(client, tag, "DELETE completed");
     } else {
-        log_emit(LOG_LEVEL_ERROR, "imap", client->account ? client->account->email : NULL, client->session_id, "DELETE failed mailbox=%s", mailbox_name);
+        log_emit(LOG_LEVEL_ERROR, "imap", client->account ? client->account->username : NULL, client->session_id, "DELETE failed mailbox=%s", mailbox_name);
         send_tagged_no(client, tag, "DELETE failed");
     }
 
@@ -707,7 +727,7 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
 
     if (!s3_key) {
         /* Log failure to store */
-        log_emit(LOG_LEVEL_ERROR, "imap", client->account ? client->account->email : NULL, client->session_id, "APPEND failed: s3 upload failed mailbox=%s uid=%d size=%zu", mailbox_name, next_uid, message_size);
+        log_emit(LOG_LEVEL_ERROR, "imap", client->account ? client->account->username : NULL, client->session_id, "APPEND failed: s3 upload failed mailbox=%s uid=%d size=%zu", mailbox_name, next_uid, message_size);
         if (message_data) free(message_data);
         free(mailbox->name);
         free(mailbox->flags);
@@ -788,7 +808,7 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
         message->envelope_subject = strdup("");
     }
 
-    message->envelope_to = strdup(client->account->email);
+    message->envelope_to = strdup(client->account->username);
     message->body_s3_key = s3_key;
     message->body_size = message_size;
     message->mime_type = strdup("message/rfc822");
@@ -797,7 +817,7 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
     // Store message in database
     if (db_store_message(message)) {
         /* Log successful append */
-        log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->email : NULL, client->session_id, "APPEND completed mailbox=%s uid=%d size=%zu s3=%s", mailbox_name, next_uid, message_size, s3_key);
+        log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->username : NULL, client->session_id, "APPEND completed mailbox=%s uid=%d size=%zu s3=%s", mailbox_name, next_uid, message_size, s3_key);
 
         // Free message resources
         free(message->flags);
@@ -818,7 +838,7 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
         send_tagged_ok(client, tag, "APPEND completed");
     } else {
         /* Log failure storing to DB */
-        log_emit(LOG_LEVEL_ERROR, "imap", client->account ? client->account->email : NULL, client->session_id, "APPEND failed: db_store_message failed mailbox=%s uid=%d s3=%s", mailbox_name, next_uid, s3_key);
+        log_emit(LOG_LEVEL_ERROR, "imap", client->account ? client->account->username : NULL, client->session_id, "APPEND failed: db_store_message failed mailbox=%s uid=%d s3=%s", mailbox_name, next_uid, s3_key);
 
         // Cleanup on failure
         s3_delete_message(s3_key);
@@ -895,12 +915,12 @@ void handle_fetch(ClientState *client, const char *tag, const char *args) {
         FILE *tmp = s3_download_message_file(msg->body_s3_key, &body_size);
         if (!tmp) {
             /* Log S3 download failure */
-            log_emit(LOG_LEVEL_WARN, "imap", client->account ? client->account->email : NULL, client->session_id, "FETCH warning: s3 download failed key=%s uid=%d", msg->body_s3_key, msg->uid);
+            log_emit(LOG_LEVEL_WARN, "imap", client->account ? client->account->username : NULL, client->session_id, "FETCH warning: s3 download failed key=%s uid=%d", msg->body_s3_key, msg->uid);
             continue;
         }
 
         /* Log streaming start */
-        log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->email : NULL, client->session_id, "FETCH streaming uid=%d size=%zu s3=%s", msg->uid, body_size, msg->body_s3_key);
+        log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->username : NULL, client->session_id, "FETCH streaming uid=%d size=%zu s3=%s", msg->uid, body_size, msg->body_s3_key);
 
         char response[MAX_RESPONSE_LENGTH];
 
@@ -913,7 +933,7 @@ void handle_fetch(ClientState *client, const char *tag, const char *args) {
             send_untagged(client, response);
 
             /* Log start of streaming body for this message */
-            log_emit(LOG_LEVEL_DEBUG, "imap", client->account ? client->account->email : NULL, client->session_id, "FETCH start uid=%d size=%zu s3=%s", msg->uid, body_size, msg->body_s3_key);
+            log_emit(LOG_LEVEL_DEBUG, "imap", client->account ? client->account->username : NULL, client->session_id, "FETCH start uid=%d size=%zu s3=%s", msg->uid, body_size, msg->body_s3_key);
 
             // Stream body from file
             rewind(tmp);
@@ -930,7 +950,7 @@ void handle_fetch(ClientState *client, const char *tag, const char *args) {
             send_response(client, "\r\n)");
 
             /* Log completion of streaming */
-            log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->email : NULL, client->session_id, "FETCH complete uid=%d size=%zu s3=%s", msg->uid, body_size, msg->body_s3_key);
+            log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->username : NULL, client->session_id, "FETCH complete uid=%d size=%zu s3=%s", msg->uid, body_size, msg->body_s3_key);
 
         } else if (strstr(items, "BODY[HEADER]")) {
             // Just headers (simplified - sends full message)
@@ -1049,7 +1069,7 @@ void handle_copy(ClientState *client, const char *tag, const char *args) {
     // In a full implementation, we would copy messages
     // For now, just acknowledge the command
 
-    log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->email : NULL, client->session_id, "COPY dest=%s", mailbox_name);
+    log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->username : NULL, client->session_id, "COPY dest=%s", mailbox_name);
 
     free(dest_mailbox->name);
     free(dest_mailbox->flags);
@@ -1170,7 +1190,7 @@ void handle_search(ClientState *client, const char *tag, const char *args) {
 
 // Handle LOGOUT command
 void handle_logout(ClientState *client, const char *tag) {
-    log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->email : NULL, client->session_id, "LOGOUT session_end");
+    log_emit(LOG_LEVEL_INFO, "imap", client->account ? client->account->username : NULL, client->session_id, "LOGOUT session_end");
     send_untagged(client, "BYE IMAP4rev1 Server logging out");
     send_tagged_ok(client, tag, "LOGOUT completed");
 }

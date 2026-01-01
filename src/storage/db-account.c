@@ -1,5 +1,8 @@
 #include "db.h"
+#include "parser.h"
 #include "password.h"
+#include <stdio.h>
+#include <string.h>
 
 // Verify password
 bool db_verify_password(Account *account, const char *password) {
@@ -32,22 +35,44 @@ bool db_verify_password(Account *account, const char *password) {
     return verified;
 }
 
-Account *db_get_account_by_username(const char *username, const char *domain) {
+/**
+ * Get account by username and domain
+ * @param username The username test@example.com
+ * @return Pointer to Account struct or NULL if not found
+ */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
+Account *db_get_account_by_username(const char *username) {
+
     MYSQL *conn = db_get_connection();
     if (!conn)
         return NULL;
 
-    char query[1024];
+    char query[4096];
+    char esc_username[2048] = {0};
+    mysql_real_escape_string(conn, esc_username, username ? username : "", username ? (unsigned long)strlen(username) : 0);
     snprintf(query, sizeof(query),
-             "SELECT a.id, a.domain_id, a.username, a.email, a.full_name, "
+             "SELECT a.id, a.domain_id, a.username, a.full_name, "
              "a.is_active, a.created_at, a.updated_at "
              "FROM accounts a JOIN domains d ON a.domain_id = d.id "
-             "WHERE a.username = '%s' AND d.domain_name = '%s' AND a.is_active = 1",
-             mysql_real_escape_string(conn, query + strlen(query) - 2, username, strlen(username)),
-             mysql_real_escape_string(conn, query + strlen(query) - 2, domain, strlen(domain)));
+             "WHERE a.is_active = '%d' AND a.username = '%s'",
+             1, esc_username);
+
+    /* Debug: persist constructed query */
+    FILE *dq = fopen("/tmp/db-query.log", "a");
+    if (dq) {
+        fprintf(dq, "QUERY: %s\n", query);
+        fclose(dq);
+    }
 
     MYSQL_RES *result = db_execute_query_result(conn, query);
     if (!result) {
+        /* Debug: log mysql error */
+        FILE *de = fopen("/tmp/db-query.log", "a");
+        if (de) {
+            fprintf(de, "QUERY ERROR: %s\n", mysql_error(conn));
+            fclose(de);
+        }
         db_release_connection(conn);
         return NULL;
     }
@@ -63,11 +88,10 @@ Account *db_get_account_by_username(const char *username, const char *domain) {
     account->id = atoi(row[0]);
     account->domain_id = atoi(row[1]);
     account->username = strdup(row[2]);
-    account->email = strdup(row[3]);
-    account->full_name = row[4] ? strdup(row[4]) : NULL;
-    account->is_active = atoi(row[5]) == 1;
-    account->created_at = (time_t)atol(row[6]);
-    account->updated_at = (time_t)atol(row[7]);
+    account->full_name = row[3] ? strdup(row[3]) : NULL;
+    account->is_active = atoi(row[4]) == 1;
+    account->created_at = (time_t)atol(row[5]);
+    account->updated_at = (time_t)atol(row[6]);
 
     mysql_free_result(result);
     db_release_connection(conn);
@@ -75,57 +99,23 @@ Account *db_get_account_by_username(const char *username, const char *domain) {
     return account;
 }
 
-Account *db_get_account_by_email(const char *email) {
+Account *db_create_account(const char *username, const char *password, const char *full_name) {
     MYSQL *conn = db_get_connection();
     if (!conn)
         return NULL;
 
-    char query[1024];
-    snprintf(query, sizeof(query),
-             "SELECT id, domain_id, username, email, full_name, "
-             "is_active, created_at, updated_at "
-             "FROM accounts WHERE email = '%s' AND is_active = 1",
-             mysql_real_escape_string(conn, query + strlen(query) - 2, email, strlen(email)));
-
-    MYSQL_RES *result = db_execute_query_result(conn, query);
-    if (!result) {
+    // get domain from username
+    const char *domain = get_domain_from_email(username);
+    if (!domain) {
         db_release_connection(conn);
         return NULL;
     }
-
-    MYSQL_ROW row = mysql_fetch_row(result);
-    if (!row) {
-        mysql_free_result(result);
-        db_release_connection(conn);
-        return NULL;
-    }
-
-    Account *account = malloc(sizeof(Account));
-    account->id = atoi(row[0]);
-    account->domain_id = atoi(row[1]);
-    account->username = strdup(row[2]);
-    account->email = strdup(row[3]);
-    account->full_name = row[4] ? strdup(row[4]) : NULL;
-    account->is_active = atoi(row[5]) == 1;
-    account->created_at = (time_t)atol(row[6]);
-    account->updated_at = (time_t)atol(row[7]);
-
-    mysql_free_result(result);
-    db_release_connection(conn);
-
-    return account;
-}
-
-Account *db_create_account(const char *username, const char *domain, const char *password, const char *email, const char *full_name) {
-    MYSQL *conn = db_get_connection();
-    if (!conn)
-        return NULL;
 
     // Get domain ID
-    char domain_query[512];
-    snprintf(domain_query, sizeof(domain_query),
-             "SELECT id FROM domains WHERE domain_name = '%s'",
-             mysql_real_escape_string(conn, domain_query + strlen(domain_query) - 2, domain, strlen(domain)));
+    char domain_query[1024];
+    char esc_domain[1024] = {0};
+    mysql_real_escape_string(conn, esc_domain, domain ? domain : "", domain ? (unsigned long)strlen(domain) : 0);
+    snprintf(domain_query, sizeof(domain_query), "SELECT id FROM domains WHERE domain_name = '%s'", esc_domain);
 
     MYSQL_RES *domain_result = db_execute_query_result(conn, domain_query);
     if (!domain_result) {
@@ -144,39 +134,45 @@ Account *db_create_account(const char *username, const char *domain, const char 
     mysql_free_result(domain_result);
 
     // Hash password
-    char password_hash = create_password(password);
+    char *password_hash = create_password(password);
     if (!password_hash) {
         db_release_connection(conn);
         return NULL;
     }
 
-    // Insert account
-    char insert_query[2048];
+    // Insert account (no email column needed - email derived from username@domain)
+    char insert_query[8192];
+    char esc_username[2048] = {0}, esc_full_name[2048] = {0}, esc_password_hash[2048] = {0};
+    mysql_real_escape_string(conn, esc_username, username ? username : "", username ? (unsigned long)strlen(username) : 0);
+    mysql_real_escape_string(conn, esc_full_name, full_name ? full_name : "", full_name ? (unsigned long)strlen(full_name) : 0);
+    mysql_real_escape_string(conn, esc_password_hash, password_hash, strlen(password_hash));
+
     snprintf(insert_query, sizeof(insert_query),
-             "INSERT INTO accounts (domain_id, username, email, full_name, password_hash, is_active, created_at, updated_at) "
-             "VALUES (%d, '%s', '%s', '%s', '%s', 1, NOW(), NOW())",
-             domain_id,
-             mysql_real_escape_string(conn, insert_query + strlen(insert_query) - 2, username, strlen(username)),
-             mysql_real_escape_string(conn, insert_query + strlen(insert_query) - 2, email, strlen(email)),
-             mysql_real_escape_string(conn, insert_query + strlen(insert_query) - 2, full_name ? full_name : "", full_name ? strlen(full_name) : 0),
-             mysql_real_escape_string(conn, insert_query + strlen(insert_query) - 2, password_hash, strlen(password_hash)));
+             "INSERT INTO accounts (domain_id, username, full_name, password_hash, is_active, created_at, updated_at) "
+             "VALUES (%d, '%s', '%s', '%s', 1, NOW(), NOW())",
+             domain_id, esc_username, esc_full_name, esc_password_hash);
 
     if (!db_execute_query(conn, insert_query)) {
+        free(password_hash);
         db_release_connection(conn);
         return NULL;
     }
 
-    int account_id = (int)mysql_insert_id(conn);
+    free(password_hash);
+
     db_release_connection(conn);
 
-    return db_get_account_by_username(username, domain);
+    return db_get_account_by_username(username);
 }
+
+#pragma GCC diagnostic pop
 
 /* Free Account and its fields */
 void db_free_account(Account *a) {
-    if (!a) return;
+    if (!a)
+        return;
     free(a->username);
-    free(a->email);
-    if (a->full_name) free(a->full_name);
+    if (a->full_name)
+        free(a->full_name);
     free(a);
 }

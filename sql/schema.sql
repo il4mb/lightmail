@@ -1,6 +1,6 @@
 -- Create database
-CREATE DATABASE IF NOT EXISTS imap_server;
-USE imap_server;
+CREATE DATABASE IF NOT EXISTS maildb;
+USE maildb;
 
 -- Domains table
 CREATE TABLE domains (
@@ -8,23 +8,28 @@ CREATE TABLE domains (
     domain_name VARCHAR(255) NOT NULL UNIQUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    is_active BOOLEAN DEFAULT TRUE,
+    quota_mb INT DEFAULT 1024,
+    quota_used_mb INT DEFAULT 0,
+    max_accounts INT DEFAULT 10,
     INDEX idx_domain_name (domain_name)
 ) ENGINE=InnoDB;
 
 -- Users/Accounts table
+-- Note: email is derived from username@domain, so no separate email column is needed
 CREATE TABLE accounts (
     id INT PRIMARY KEY AUTO_INCREMENT,
     domain_id INT NOT NULL,
     username VARCHAR(64) NOT NULL,
     password_hash VARCHAR(255) NOT NULL,
-    email VARCHAR(255) NOT NULL UNIQUE,
     full_name VARCHAR(255),
     is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    quota_mb INT DEFAULT 1024,
+    quota_used_mb INT DEFAULT 0,
     FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
     INDEX idx_username (username),
-    INDEX idx_email (email),
     UNIQUE KEY unique_domain_user (domain_id, username)
 ) ENGINE=InnoDB;
 

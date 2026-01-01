@@ -5,8 +5,8 @@ INSERT INTO domains (domain_name) VALUES ('example.com');
 
 -- Insert default user
 -- Password: "password123" hashed with bcrypt
-INSERT INTO accounts (domain_id, username, password_hash, email, full_name) VALUES
-(1, 'user', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'user@example.com', 'Test User');
+INSERT INTO accounts (domain_id, username, password_hash, full_name) VALUES
+(1, 'user@example.com', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'Test User');
 
 -- Create default mailboxes for the user
 INSERT INTO mailboxes (account_id, name, flags, permanent_flags) VALUES

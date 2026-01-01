@@ -1,11 +1,8 @@
 bin_PROGRAMS = lightmail
 AM_CPPFLAGS = -I$(top_srcdir)/include
 
-
-
 lightmail_SOURCES = \
     src/lightmail.c \
-    src/core/auth.c \
     src/core/lock.c \
     src/core/password.c \
     src/core/shutdown.c \
@@ -31,6 +28,10 @@ lightmail_SOURCES = \
     src/lmtp/queue.c
 
 lightmail_LDADD = -lmysqlclient -lcurl -lpthread -lcrypt -lssl -lcrypto 
+
+if HAVE_SYSTEMD
+lightmail_LDADD += -lsystemd
+endif
 
 setcap:
 	sudo setcap 'cap_net_bind_service=+ep' lightmail

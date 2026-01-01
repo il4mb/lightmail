@@ -143,7 +143,7 @@ static int handle_data_phase(lmtp_session_t* session) {
         if (!rcpt) continue;
 
         /* Lookup account by email */
-        Account *acc = db_get_account_by_email(rcpt);
+        Account *acc = db_get_account_by_username(rcpt);
         if (!acc) {
             /* Unknown user: per-RCPT failure, log and continue */
             log_emit(LOG_LEVEL_WARN, "lmtp", NULL, NULL, "Unknown recipient %s", rcpt);

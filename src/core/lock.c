@@ -45,3 +45,7 @@ void release_lock(void) {
         lock_fd = -1;
     }
 }
+
+int is_already_running() {
+    return !acquire_lock(PID_FILE_PATH);
+}

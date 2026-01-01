@@ -9,7 +9,12 @@ gcc -I. -Iinclude -o build/tests/test_hash_password tests/test_hash_password.c s
 gcc -I. -Iinclude -o build/tests/test_s3_key tests/test_s3_key.c tests/test_s3_key_stub.c tests/test_stubs.c -lcurl -lcrypto
 gcc -I. -Iinclude -o build/tests/test_s3 src/log/log.c src/core/config.c src/storage/s3.c src/metrics/metrics.c tests/test_s3.c -lcurl -lcrypto -lpthread
 gcc -Iinclude -o build/tests/test_logger tests/test_logger.c src/log/log.c src/core/config.c -lpthread
+gcc -Iinclude -o build/tests/test_logger_clear tests/test_logger_clear.c src/log/log.c src/core/config.c -lpthread
 gcc -I. -Iinclude -o build/tests/test_metrics tests/test_metrics.c src/metrics/metrics.c src/log/log.c src/core/config.c -lpthread
+
+# run tests
+./build/tests/test_logger
+./build/tests/test_logger_clear
 gcc -I. -Iinclude -o build/tests/test_lmtp_queue tests/test_lmtp_queue.c src/lmtp/queue.c src/metrics/metrics.c src/log/log.c src/core/config.c -lpthread
 gcc -I. -Iinclude -o build/tests/test_lmtp_worker_db tests/test_lmtp_worker_db.c src/lmtp/queue.c src/metrics/metrics.c src/log/log.c src/core/config.c -lpthread
 gcc -I. -Iinclude -o build/tests/test_lmtp_saturation tests/test_lmtp_saturation.c src/lmtp/queue.c src/metrics/metrics.c src/log/log.c src/core/config.c -lpthread

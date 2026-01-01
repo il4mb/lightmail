@@ -17,7 +17,16 @@ AC_CHECK_HEADERS([
     unistd.h
     stdlib.h
     string.h
+    systemd/sd-journal.h
+    systemd/sd-daemon.h
 ])
+
+# Check for libsystemd (optional, enables journald support)
+PKG_CHECK_MODULES([SYSTEMD], [libsystemd], [HAVE_SYSTEMD=yes], [HAVE_SYSTEMD=no])
+AM_CONDITIONAL([HAVE_SYSTEMD], [test "$HAVE_SYSTEMD" = "yes"])
+if test "$HAVE_SYSTEMD" = "yes"; then
+    AC_DEFINE([HAVE_SYSTEMD], [1], [Define if systemd journal is available])
+fi
 
 AC_CONFIG_FILES([ Makefile ])
 

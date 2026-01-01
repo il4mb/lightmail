@@ -29,6 +29,8 @@ typedef struct {
 typedef struct {
     int id;
     char *domain_name;
+    int quota_mb;
+    int quota_used_mb;
     time_t created_at;
     time_t updated_at;
 } Domain;
@@ -37,9 +39,10 @@ typedef struct {
     int id;
     int domain_id;
     char *username;
-    char *email;
     char *full_name;
     bool is_active;
+    int quota_mb;
+    int quota_used_mb;
     time_t created_at;
     time_t updated_at;
 } Account;
@@ -87,10 +90,9 @@ MYSQL* db_get_connection(void);
 void db_release_connection(MYSQL *conn);
 
 // Account functions
-Account* db_get_account_by_username(const char *username, const char *domain);
-Account* db_get_account_by_email(const char *email);
+Account* db_get_account_by_username(const char *username);
 bool db_verify_password(Account *account, const char *password);
-Account* db_create_account(const char *username, const char *domain, const char *password, const char *email, const char *full_name);
+Account* db_create_account(const char *username, const char *password, const char *full_name);
 
 // Mailbox functions
 Mailbox* db_get_mailbox(int account_id, const char *name);

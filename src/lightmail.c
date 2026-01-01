@@ -8,6 +8,8 @@
 #include "lmtp_queue.h"
 #include "metrics.h"
 #include "imap.h"
+#include "db.h"
+#include "lock.h"
 #include <dlfcn.h>
 #include <getopt.h>
 #include <stdio.h>
@@ -16,6 +18,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <pthread.h>
+#include <poll.h>
 
 // Thread wrappers to use with pthread_create
 static void *start_pop3_thread(void *arg) { (void)arg; start_pop3(); return NULL; }
@@ -98,17 +101,44 @@ void print_version() {
     printf("License: MIT\n");
 }
 
+/* startup_notify_fd is used by child to notify parent of success/failure during startup */
+static int startup_notify_fd = -1;
+
 int main(int argc, char *argv[]) {
+
     CommandOptions opts = {0};
     parse_command_line(argc, argv, args_callback, &opts);
 
-    if (is_already_running()) {
+    if(opts.help) {
+        print_usage(argv[0]);
+        return EXIT_SUCCESS;
+    }
+
+    if(opts.version) {
+        print_version();
+        return EXIT_SUCCESS;
+    }
+
+
+
+    if (opts.reload == 0 && is_already_running()) {
         fprintf(stderr, "LightMail is already running\n");
         return EXIT_FAILURE;
     }
 
     if (init_config(opts.config_file) == EXIT_FAILURE) {
         return EXIT_FAILURE;
+    }
+    LOGI("Using configuration file: %s", opts.config_file);
+
+    /* Create a pipe so child can notify parent of startup success/failure */
+    int status_pipe[2];
+    if (pipe(status_pipe) == 0) {
+        /* status_pipe[0] = read end (parent), status_pipe[1] = write end (child) */
+        /* mark fds close-on-exec so they don't leak to child execs */
+        /* parent will close write end after fork, child closes read end */
+    } else {
+        status_pipe[0] = status_pipe[1] = -1;
     }
 
     pid_t pid = fork();
@@ -118,15 +148,55 @@ int main(int argc, char *argv[]) {
     }
 
     if (pid > 0) {
-        // Parent exits immediately
-        printf("LightMail started (PID %d)\n", pid);
-        return EXIT_SUCCESS;
+        /* Parent: wait for child to report startup status, with timeout */
+        if (status_pipe[0] >= 0) close(status_pipe[1]);
+        int rc = 0;
+        if (status_pipe[0] >= 0) {
+            struct pollfd pfd;
+            pfd.fd = status_pipe[0];
+            pfd.events = POLLIN;
+            int poll_rc = poll(&pfd, 1, 3000); /* 3s timeout */
+            if (poll_rc == 1 && (pfd.revents & POLLIN)) {
+                int child_status = -1;
+                ssize_t r = read(status_pipe[0], &child_status, sizeof(child_status));
+                (void)r;
+                if (child_status == 0) {
+                    printf("LightMail started (PID %d)\n", pid);
+                    rc = EXIT_SUCCESS;
+                } else {
+                    fprintf(stderr, "LightMail failed to start (see logs for details).\n");
+                    rc = EXIT_FAILURE;
+                }
+            } else if (poll_rc == 0) {
+                fprintf(stderr, "LightMail startup timed out, child did not report status (see logs for details).\n");
+                rc = EXIT_FAILURE;
+            } else {
+                /* poll error */
+                perror("poll error during startup");
+                rc = EXIT_FAILURE;
+            }
+            close(status_pipe[0]);
+        } else {
+            /* no pipe available, fallback to optimistic start */
+            fprintf(stderr, "LightMail started without status pipe (PID %d). Check logs for errors.\n", pid);
+            rc = EXIT_SUCCESS;
+        }
+        return rc;
     }
 
     // ---- CHILD (DAEMON) ----
+    /* Child closes the read end of the pipe and keeps write end to notify parent */
+    if (status_pipe[0] >= 0) {
+        close(status_pipe[0]);
+        startup_notify_fd = status_pipe[1];
+    }
+
     umask(0);
 
     if (setsid() < 0) {
+        if (startup_notify_fd >= 0) {
+            int err = 1; (void)write(startup_notify_fd, &err, sizeof(err)); close(startup_notify_fd);
+        }
         _exit(1);
     }
 
@@ -141,9 +211,30 @@ int main(int argc, char *argv[]) {
 
     // Now safe to initialize logging & signals
     setup_signal_handlers();
-    LOG_INIT();
+    /* Initialize logging using configured path if provided so the daemon writes to file by default */
+    const char *lpath = get_config_value("logging", "path");
+    if (lpath) {
+        if (log_init(lpath, LOG_OUTPUT_FILE) != 0) {
+            /* fallback to stdout if file init fails */
+            log_init(NULL, LOG_OUTPUT_STDOUT);
+        }
+    } else {
+        log_init(NULL, LOG_OUTPUT_STDOUT);
+    }
 
-    /* Start POP3 service (placeholder) */
+    /* Initialize database connections */
+    if (db_init() == EXIT_FAILURE) {
+        LOGE("Database initialization failed, aborting startup");
+        /* Notify parent of failure if pipe available */
+        if (startup_notify_fd >= 0) {
+            int err = 1;
+            (void)write(startup_notify_fd, &err, sizeof(err));
+            close(startup_notify_fd);
+        }
+        _exit(1);
+    }
+
+    /* Start POP3 service */
     pthread_t pop3_thread;
     if (pthread_create(&pop3_thread, NULL, start_pop3_thread, NULL) == 0) {
         pthread_detach(pop3_thread);
@@ -170,7 +261,25 @@ int main(int argc, char *argv[]) {
     /* Start LMTP queue manager */
     lmtp_queue_init(get_config_int("service", "lmtp_queue_capacity", 256));
 
-    start_imap();
+    /* Start IMAP server (runs in its own thread now) */
+    if (start_imap() != 0) {
+        LOGE("IMAP server failed to start, aborting startup");
+        if (startup_notify_fd >= 0) {
+            int err = 1;
+            (void)write(startup_notify_fd, &err, sizeof(err));
+            close(startup_notify_fd);
+        }
+        _exit(1);
+    }
+
+    /* Notify parent we're up */
+    if (startup_notify_fd >= 0) {
+        int ok = 0;
+        (void)write(startup_notify_fd, &ok, sizeof(ok));
+        close(startup_notify_fd);
+    }
+
+    /* Child continues running the services (IMAP runs in its own thread) */
 
     // Graceful shutdown
     free_config();

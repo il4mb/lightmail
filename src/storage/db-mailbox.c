@@ -1,21 +1,39 @@
 #include "db.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
 
 // Mailbox functions
 Mailbox *db_get_mailbox(int account_id, const char *name) {
     MYSQL *conn = db_get_connection();
     if (!conn) return NULL;
 
-    char query[512];
+    char query[1024];
+    char esc_name[512] = {0};
+    mysql_real_escape_string(conn, esc_name, name ? name : "", name ? (unsigned long)strlen(name) : 0);
     snprintf(query, sizeof(query),
         "SELECT id, account_id, name, flags, permanent_flags, "
         "uid_validity, uid_next, total_messages, unseen_messages, "
         "recent_messages, is_subscribed, created_at, updated_at "
         "FROM mailboxes WHERE account_id = %d AND name = '%s'",
         account_id,
-        mysql_real_escape_string(conn, query + strlen(query) - 2, name, strlen(name)));
+        esc_name);
+
+    /* Debug: persist constructed query */
+    FILE *dq = fopen("/tmp/db-query.log", "a");
+    if (dq) {
+        fprintf(dq, "QUERY: %s\n", query);
+        fclose(dq);
+    }
 
     MYSQL_RES *result = db_execute_query_result(conn, query);
     if (!result) {
+        /* Debug: log mysql error */
+        FILE *de = fopen("/tmp/db-query.log", "a");
+        if (de) {
+            fprintf(de, "QUERY ERROR: %s\n", mysql_error(conn));
+            fclose(de);
+        }
         db_release_connection(conn);
         return NULL;
     }
@@ -55,7 +73,7 @@ Mailbox **db_get_mailboxes(int account_id, int *count) {
         return NULL;
     }
 
-    char query[512];
+    char query[1024];
     snprintf(query, sizeof(query),
         "SELECT id, account_id, name, flags, permanent_flags, "
         "uid_validity, uid_next, total_messages, unseen_messages, "
@@ -63,8 +81,21 @@ Mailbox **db_get_mailboxes(int account_id, int *count) {
         "FROM mailboxes WHERE account_id = %d",
         account_id);
 
+    /* Debug: persist constructed query */
+    FILE *dq = fopen("/tmp/db-query.log", "a");
+    if (dq) {
+        fprintf(dq, "QUERY: %s\n", query);
+        fclose(dq);
+    }
+
     MYSQL_RES *result = db_execute_query_result(conn, query);
     if (!result) {
+        /* Debug: log mysql error */
+        FILE *de = fopen("/tmp/db-query.log", "a");
+        if (de) {
+            fprintf(de, "QUERY ERROR: %s\n", mysql_error(conn));
+            fclose(de);
+        }
         db_release_connection(conn);
         *count = 0;
         return NULL;
@@ -109,25 +140,33 @@ void db_free_mailbox(Mailbox *m) {
     free(m);
 }   
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-truncation"
 bool db_create_mailbox(int account_id, const char *name, const char *flags) {
     MYSQL *conn = db_get_connection();
     if (!conn) return false;
 
-    char query[512];
+    char query[1024];
+    char esc_name[512] = {0}, esc_flags[512] = {0};
+    mysql_real_escape_string(conn, esc_name, name ? name : "", name ? (unsigned long)strlen(name) : 0);
+    mysql_real_escape_string(conn, esc_flags, flags ? flags : "", flags ? (unsigned long)strlen(flags) : 0);
+
     snprintf(query, sizeof(query),
         "INSERT INTO mailboxes (account_id, name, flags, permanent_flags, "
         "uid_validity, uid_next, total_messages, unseen_messages, "
         "recent_messages, is_subscribed, created_at, updated_at) "
         "VALUES (%d, '%s', '%s', '%s', %d, %d, 0, 0, 0, 1, NOW(), NOW())",
         account_id,
-        mysql_real_escape_string(conn, query + strlen(query) - 2, name, strlen(name)),
-        mysql_real_escape_string(conn, query + strlen(query) - 2, flags, strlen(flags)),
-        mysql_real_escape_string(conn, query + strlen(query) - 2, flags, strlen(flags)), // Permanent flags same as initial flags
-        rand() % 100000 + 1, // Random UID validity
-        1); // Initial UID next
+        esc_name,
+        esc_flags,
+        esc_flags, /* Permanent flags same as initial flags */
+        rand() % 100000 + 1, /* Random UID validity */
+        1); /* Initial UID next */
 
     bool success = db_execute_query(conn, query);
     db_release_connection(conn);
+
+#pragma GCC diagnostic pop
 
     return success;
 }

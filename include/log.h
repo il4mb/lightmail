@@ -1,57 +1,70 @@
-#ifndef LIGHTMAIL_LOG_H
-#define LIGHTMAIL_LOG_H
-
+#include <stdarg.h>
 #include <stdint.h>
-#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-/* Log levels */
 typedef enum {
     LOG_LEVEL_DEBUG = 0,
-    LOG_LEVEL_INFO,
-    LOG_LEVEL_WARN,
-    LOG_LEVEL_ERROR,
-    LOG_LEVEL_CRITICAL
+    LOG_LEVEL_INFO = 1,
+    LOG_LEVEL_WARN = 2,
+    LOG_LEVEL_ERROR = 3,
+    LOG_LEVEL_CRITICAL = 4,
 } log_level_t;
 
-/* Initialize logger. If path == NULL use STDOUT. */
-int log_init(const char *path);
+/* Log output destinations */
+typedef enum {
+    LOG_OUTPUT_FILE = 0,
+    LOG_OUTPUT_JOURNAL = 1,
+    LOG_OUTPUT_BOTH = 2,
+    LOG_OUTPUT_STDOUT = 3,
+} log_output_t;
+
+/* Initialize logging system
+ * path: file path for file-based logging (NULL for stdout only)
+ * output: output destination (file, journal, both, or stdout)
+ * Returns: 0 on success, -1 on error
+ */
+int log_init(const char *path, log_output_t output);
+
+/* Close logging system and flush all pending messages */
 void log_close(void);
 
-/* Set runtime level for a service category (e.g., "imap", "pop3") */
-void log_set_level(const char *service, log_level_t level);
-
-/* Reload logging configuration from global config (non-allocating) */
+/* Reload configuration */
 int log_reload_config(void);
 
-/* Emit a structured log. Hot path: no heap allocation. */
-void log_emit(log_level_t level, const char *service, const char *user, const char *session, const char *fmt, ...) __attribute__((format(printf,5,6)));
+/* Set log level for a specific service */
+void log_set_level(const char *service, log_level_t level);
 
-/* Diagnostic: get number of dropped log entries */
+/* Emit a log message */
+void log_emit(log_level_t level, const char *service, const char *user, 
+              const char *session, const char *fmt, ...);
+
+/* Get dropped message count (for diagnostics) */
 unsigned int log_dropped_count(void);
 
-/* Convenience macros to preserve existing LOGI/LOGE style */
-#define LOG_INIT() log_init(NULL)
+/* Convenience macros */
+#define LOG_INIT() log_init(NULL, LOG_OUTPUT_STDOUT)
+#define LOG_INIT_FILE(path) log_init(path, LOG_OUTPUT_FILE)
+#define LOG_INIT_JOURNAL() log_init(NULL, LOG_OUTPUT_JOURNAL)
+#define LOG_INIT_BOTH(path) log_init(path, LOG_OUTPUT_BOTH)
 #define LOG_CLOSE() log_close()
 
-#define LOGD(fmt, ...) log_emit(LOG_LEVEL_DEBUG, "main", NULL, NULL, (fmt), ##__VA_ARGS__)
-#define LOGI(fmt, ...) log_emit(LOG_LEVEL_INFO,  "main", NULL, NULL, (fmt), ##__VA_ARGS__)
-#define LOGW(fmt, ...) log_emit(LOG_LEVEL_WARN,  "main", NULL, NULL, (fmt), ##__VA_ARGS__)
-#define LOGE(fmt, ...) log_emit(LOG_LEVEL_ERROR, "main", NULL, NULL, (fmt), ##__VA_ARGS__)
+/* Log level macros for compatibility */
+#define LOGD(fmt, ...) log_emit(LOG_LEVEL_DEBUG, "main", NULL, NULL, fmt, ##__VA_ARGS__)
+#define LOGI(fmt, ...) log_emit(LOG_LEVEL_INFO, "main", NULL, NULL, fmt, ##__VA_ARGS__)
+#define LOGW(fmt, ...) log_emit(LOG_LEVEL_WARN, "main", NULL, NULL, fmt, ##__VA_ARGS__)
+#define LOGE(fmt, ...) log_emit(LOG_LEVEL_ERROR, "main", NULL, NULL, fmt, ##__VA_ARGS__)
+#define LOGF(fmt, ...) do { log_emit(LOG_LEVEL_CRITICAL, "main", NULL, NULL, fmt, ##__VA_ARGS__); log_close(); _exit(1); } while(0)
 
-#define LOGF(fmt, ...) do { log_emit(LOG_LEVEL_CRITICAL, "main", NULL, NULL, (fmt), ##__VA_ARGS__); log_close(); _exit(1); } while(0)
+/* Service-specific log macros */
+#define LOG_IMAP(level, fmt, ...) log_emit(level, "imap", NULL, NULL, fmt, ##__VA_ARGS__)
+#define LOG_POP3(level, fmt, ...) log_emit(level, "pop3", NULL, NULL, fmt, ##__VA_ARGS__)
+#define LOG_DB(level, fmt, ...) log_emit(level, "db", NULL, NULL, fmt, ##__VA_ARGS__)
 
-/* Service-specific helpers */
-#define LOGD_S(svc, fmt, ...) log_emit(LOG_LEVEL_DEBUG, (svc), NULL, NULL, (fmt), ##__VA_ARGS__)
-#define LOGI_S(svc, fmt, ...) log_emit(LOG_LEVEL_INFO, (svc), NULL, NULL, (fmt), ##__VA_ARGS__)
-#define LOGW_S(svc, fmt, ...) log_emit(LOG_LEVEL_WARN, (svc), NULL, NULL, (fmt), ##__VA_ARGS__)
-#define LOGE_S(svc, fmt, ...) log_emit(LOG_LEVEL_ERROR, (svc), NULL, NULL, (fmt), ##__VA_ARGS__)
+/* Convenience service-specific macros that take the service name as first arg */
+#define LOGD_S(service, fmt, ...) log_emit(LOG_LEVEL_DEBUG, service, NULL, NULL, fmt, ##__VA_ARGS__)
+#define LOGI_S(service, fmt, ...) log_emit(LOG_LEVEL_INFO, service, NULL, NULL, fmt, ##__VA_ARGS__)
+#define LOGW_S(service, fmt, ...) log_emit(LOG_LEVEL_WARN, service, NULL, NULL, fmt, ##__VA_ARGS__)
+#define LOGE_S(service, fmt, ...) log_emit(LOG_LEVEL_ERROR, service, NULL, NULL, fmt, ##__VA_ARGS__)
+#define LOGF_S(service, fmt, ...) do { log_emit(LOG_LEVEL_CRITICAL, service, NULL, NULL, fmt, ##__VA_ARGS__); log_close(); _exit(1); } while(0)
 
-#ifdef __cplusplus
-}
-#endif
-
-#endif

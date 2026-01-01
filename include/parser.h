@@ -155,4 +155,22 @@ static inline int parse_config_file(const char *filepath, config_callback_t call
     return EXIT_SUCCESS;
 }
 
+
+/**
+ * Returns a pointer to the domain part of an email string.
+ * Returns NULL if the '@' symbol is not found or is the last character.
+ */
+static inline const char *get_domain_from_email(const char *email) {
+    if (email == NULL) return NULL;
+
+    // Find the first occurrence of '@'
+    const char *at_symbol = strchr(email, '@');
+
+    // If '@' exists and is not the very last character in the string
+    if (at_symbol && *(at_symbol + 1) != '\0') {
+        return at_symbol + 1;
+    }
+
+    return NULL;
+}
 #endif

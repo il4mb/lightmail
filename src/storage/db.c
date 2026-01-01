@@ -22,6 +22,9 @@ void config_callback(const char *key, const char *value, void *ctx) {
         db_config->password = strdup(value);
     } else if (strcmp(key, "name") == 0) {
         db_config->name = strdup(value);
+    } else if (strcmp(key, "database") == 0) {
+        /* Support alternate key name used in config files */
+        db_config->name = strdup(value);
     } else if (strcmp(key, "socket") == 0) {
         db_config->socket = strdup(value);
     } else if (strcmp(key, "port") == 0) {
@@ -59,6 +62,13 @@ int db_init(void) {
     printf(" Port: %d\n", cfg.port);
     printf(" Pool Size: %d\n", cfg.pool_size);
 
+    /* Debug: persist DB config so we can inspect whether initialization ran */
+    FILE *df = fopen("/tmp/db-init.log", "a");
+    if (df) {
+        fprintf(df, "DB Config: host=%s user=%s name=%s port=%d pool=%d\n", cfg.host, cfg.user, cfg.name, cfg.port, cfg.pool_size);
+        fclose(df);
+    }
+
     pthread_mutex_init(&connection_pool.lock, NULL);
     connection_pool.count = 0;
     connection_pool.max = cfg.pool_size;
@@ -85,7 +95,7 @@ int db_init(void) {
     }
 
     printf("Database pool initialized with %d connections\n", connection_pool.count);
-    return EXIT_FAILURE;
+    return EXIT_SUCCESS;
 }
 
 // Get connection from pool
