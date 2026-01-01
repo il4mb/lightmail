@@ -77,8 +77,8 @@ static void *_worker_main(void *arg) {
             Message *m = calloc(1, sizeof(Message));
             if (m) {
                 m->mailbox_id = job.mailbox_id;
-                int next_uid = db_get_next_uid(job.mailbox_id);
-                m->uid = (next_uid > 0) ? next_uid : job.message_uid;
+                /* Use the UID assigned by the LMTP session during enqueue (job.message_uid). */
+                m->uid = job.message_uid;
                 m->internal_date = time(NULL);
                 m->flags = strdup("");
                 m->size = job.size;

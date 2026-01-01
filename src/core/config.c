@@ -18,10 +18,10 @@ static ConfigCollection cfg = {0};
 static char config_file_path[PATH_MAX] = "";
 
 /* ====================== INTERNAL FUNCTIONS ====================== */
-static config_callback_t config_entry_iterator(const char *section, const char *key, const char *value, void *ctx) {
+static void config_entry_iterator(const char *section, const char *key, const char *value, void *ctx) {
     (void)ctx; /* Unused parameter */
     set_config_value(section, key, value);
-}
+} 
 
 static ConfigMap *get_or_create_section(const char *section) {
     if (!section) {
@@ -343,17 +343,20 @@ char *normalize_path(const char *path) {
     }
 
     // Construct full path
-    char full_path[PATH_MAX];
-    snprintf(full_path, sizeof(full_path), "%s/%s", cwd, path);
+    char *full_path = NULL;
+    if (asprintf(&full_path, "%s/%s", cwd, path) < 0) {
+        return NULL;
+    }
 
     // Resolve symlinks and normalize
     char *resolved = realpath(full_path, NULL);
     if (resolved) {
+        free(full_path);
         return resolved;
     }
 
-    // If realpath fails (file might not exist), return the constructed path
-    return strdup(full_path);
+    // If realpath fails (file might not exist), return the constructed path (caller frees)
+    return full_path; 
 }
 
 char *get_config_path(const char *section, const char *key, const char *default_path) {

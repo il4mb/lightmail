@@ -32,10 +32,19 @@ int db_get_next_uid(int mailbox_id) {
     return 100;
 }
 
+int db_allocate_uid(int mailbox_id) {
+    (void)mailbox_id;
+    return 100;
+}
+
 bool db_store_message(Message *m) {
     (void)m;
     db_store_called = 1;
     return db_should_succeed ? true : false;
+}
+
+void db_free_message(Message *m) {
+    (void)m; /* tests don't need to free contents */
 }
 
 int main(void) {

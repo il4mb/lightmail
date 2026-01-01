@@ -28,7 +28,7 @@ lightmail_SOURCES = \
     src/pop3/pop3.c \
     src/metrics/metrics.c \
     src/metrics/memory_sampler.c \
-    src/lmtp/queue.c 
+    src/lmtp/queue.c
 
 lightmail_LDADD = -lmysqlclient -lcurl -lpthread -lcrypt -lssl -lcrypto 
 

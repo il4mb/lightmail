@@ -17,21 +17,34 @@ User users[] = {
 };
 int user_count = 2;
 
-// Simple SHA256 hash function (requires OpenSSL)
+// Simple SHA256 hash function using OpenSSL EVP (compatible with OpenSSL 3+)
+#include <openssl/evp.h>
+
 void hash_password(const char* password, char* output) {
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256_CTX sha256;
-    
-    SHA256_Init(&sha256);
-    SHA256_Update(&sha256, password, strlen(password));
-    SHA256_Update(&sha256, SALT, strlen(SALT));
-    SHA256_Final(hash, &sha256);
-    
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+    unsigned char hash[EVP_MAX_MD_SIZE];
+    unsigned int hash_len = 0;
+    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+    if (!mdctx) {
+        output[0] = '\0';
+        return;
+    }
+
+    if (EVP_DigestInit_ex(mdctx, EVP_sha256(), NULL) != 1) {
+        EVP_MD_CTX_free(mdctx);
+        output[0] = '\0';
+        return;
+    }
+
+    EVP_DigestUpdate(mdctx, password, strlen(password));
+    EVP_DigestUpdate(mdctx, SALT, strlen(SALT));
+    EVP_DigestFinal_ex(mdctx, hash, &hash_len);
+    EVP_MD_CTX_free(mdctx);
+
+    for (unsigned int i = 0; i < hash_len; i++) {
         snprintf(output + (i * 2), 3, "%02x", hash[i]);
     }
-    output[64] = '\0';
-}
+    output[hash_len * 2] = '\0';
+} 
 
 int authenticate_user_hash(const char* username, const char* password) {
     char hash[65];

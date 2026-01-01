@@ -50,7 +50,7 @@ const char *get_loaded_config_path(void);
 
 /* Other API */
 char *normalize_path(const char *path);
-static int is_port_available(int port) {
+static __attribute__((unused)) int is_port_available(int port) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0)
         return -1;

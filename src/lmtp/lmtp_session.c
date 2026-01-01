@@ -2,6 +2,7 @@
 #include "log.h"
 #include "s3.h"
 #include "db.h"
+#include "lmtp_queue.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -158,7 +159,7 @@ static int handle_data_phase(lmtp_session_t* session) {
             continue;
         }
 
-        int assigned_uid = db_get_next_uid(mb->id);
+        int assigned_uid = db_allocate_uid(mb->id);
         if (assigned_uid <= 0) assigned_uid = 1;
 
         /* Create a copy of the tmp file per-recipient so worker can unlink safely */

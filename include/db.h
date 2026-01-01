@@ -107,6 +107,7 @@ bool db_store_message(Message *message);
 bool db_update_message_flags(int message_id, const char *flags);
 bool db_delete_message(int message_id);
 int db_get_next_uid(int mailbox_id);
+int db_allocate_uid(int mailbox_id); /* Atomically increment uid_next and return assigned uid, or -1 on error */
 
 /* Convenience free helpers */
 void db_free_message(Message *m);

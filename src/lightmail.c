@@ -7,13 +7,19 @@
 #include "lmtp.h"
 #include "lmtp_queue.h"
 #include "metrics.h"
+#include "imap.h"
 #include <dlfcn.h>
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <pthread.h>
+
+// Thread wrappers to use with pthread_create
+static void *start_pop3_thread(void *arg) { (void)arg; start_pop3(); return NULL; }
+static void *start_lmtp_thread(void *arg) { (void)arg; start_lmtp(); return NULL; }
 
 // Command line options structure
 typedef struct {
@@ -139,13 +145,13 @@ int main(int argc, char *argv[]) {
 
     /* Start POP3 service (placeholder) */
     pthread_t pop3_thread;
-    if (pthread_create(&pop3_thread, NULL, (void *(*)(void *))start_pop3, NULL) == 0) {
+    if (pthread_create(&pop3_thread, NULL, start_pop3_thread, NULL) == 0) {
         pthread_detach(pop3_thread);
     }
 
     /* Start LMTP service */
     pthread_t lmtp_thread;
-    if (pthread_create(&lmtp_thread, NULL, (void *(*)(void *))start_lmtp, NULL) == 0) {
+    if (pthread_create(&lmtp_thread, NULL, start_lmtp_thread, NULL) == 0) {
         pthread_detach(lmtp_thread);
     }
 

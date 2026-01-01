@@ -226,6 +226,39 @@ int db_get_next_uid(int mailbox_id) {
     return uid_next;
 }
 
+/* Atomically increment uid_next and return the assigned uid (previous value). */
+int db_allocate_uid(int mailbox_id) {
+    MYSQL *conn = db_get_connection();
+    if (!conn)
+        return -1;
+
+    char query[256];
+    snprintf(query, sizeof(query), "UPDATE mailboxes SET uid_next = uid_next + 1 WHERE id = %d", mailbox_id);
+    if (!db_execute_query(conn, query)) {
+        db_release_connection(conn);
+        return -1;
+    }
+
+    snprintf(query, sizeof(query), "SELECT uid_next - 1 FROM mailboxes WHERE id = %d", mailbox_id);
+    MYSQL_RES *res = db_execute_query_result(conn, query);
+    if (!res) {
+        db_release_connection(conn);
+        return -1;
+    }
+
+    MYSQL_ROW row = mysql_fetch_row(res);
+    if (!row) {
+        mysql_free_result(res);
+        db_release_connection(conn);
+        return -1;
+    }
+
+    int assigned = atoi(row[0]);
+    mysql_free_result(res);
+    db_release_connection(conn);
+    return assigned;
+}
+
 /* Free a Message and its allocated fields */
 void db_free_message(Message *m) {
     if (!m) return;

@@ -38,12 +38,9 @@ SSL_CTX *init_ssl(void) {
         LOGE("Failed to load SSL certificate or key\n");
         ERR_print_errors_fp(stderr);
         SSL_CTX_free(ctx);
-        free(cert_path);
-        free(key_path);
         return NULL;
     }
-    free(cert_path);
-    free(key_path);
+
     return ctx;
 }
 

@@ -21,7 +21,7 @@ typedef struct {
     size_t size;
 } S3Response;
 
-static S3Client *s3_client_new(const char *endpoint, const char *region, const char *bucket, const char *access_key, const char *secret_key) {
+static __attribute__((unused)) S3Client *s3_client_new(const char *endpoint, const char *region, const char *bucket, const char *access_key, const char *secret_key) {
 
     S3Client *client = calloc(1, sizeof(S3Client));
     if (!client)

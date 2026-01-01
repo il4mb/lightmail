@@ -134,7 +134,8 @@ void handle_login(ClientState *client, const char *tag, const char *args) {
     client->last_activity = time(NULL);
 
     // Generate session ID
-    snprintf(client->session_id, sizeof(client->session_id), "%s-%s-%ld", user_only, domain, time(NULL));
+    /* Truncate user and domain to avoid overflow warnings */
+    snprintf(client->session_id, sizeof(client->session_id), "%.32s-%.32s-%ld", user_only, domain, (long)time(NULL));
 
     /* Log successful login */
     log_emit(LOG_LEVEL_INFO, "auth", client->account ? client->account->email : NULL, client->session_id, "LOGIN success from_ip=%s", client->client_ip);
@@ -597,7 +598,7 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
         while (bytes_read < message_size) {
             ssize_t n;
             size_t to_read = message_size - bytes_read;
-            if (to_read > (ssize_t)buf_size)
+            if (to_read > buf_size)
                 to_read = buf_size;
 
             if (client->use_ssl && client->ssl) {
@@ -682,8 +683,8 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
     else
         header_buf[header_limit - 1] = '\0';
 
-    // Get next UID
-    int next_uid = db_get_next_uid(mailbox->id);
+    // Atomically allocate a UID
+    int next_uid = db_allocate_uid(mailbox->id);
     if (next_uid < 0) {
         if (tmp) fclose(tmp);
         if (message_data) free(message_data);
@@ -1097,7 +1098,7 @@ void handle_uid(ClientState *client, const char *tag, const char *args) {
 
 // Handle EXPUNGE command
 void handle_expunge(ClientState *client, const char *tag, const char *args) {
-    if (!client->authenticated || !client->account || !client->current_mailbox) {
+    (void)args;    if (!client->authenticated || !client->account || !client->current_mailbox) {
         send_tagged_no(client, tag, "Not authenticated or no mailbox selected");
         return;
     }
@@ -1114,7 +1115,7 @@ void handle_expunge(ClientState *client, const char *tag, const char *args) {
 
 // Handle SEARCH command
 void handle_search(ClientState *client, const char *tag, const char *args) {
-    if (!client->authenticated || !client->account || !client->current_mailbox) {
+    (void)args;    if (!client->authenticated || !client->account || !client->current_mailbox) {
         send_tagged_no(client, tag, "Not authenticated or no mailbox selected");
         return;
     }

@@ -3,7 +3,7 @@
 #include "metrics.h"
 #include <curl/curl.h>
 #include <openssl/hmac.h>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,8 +12,9 @@
 
 static S3Client s3;
 
-void s3_config_callback(const char *section, const char *key, const char *value, void *ctx) {
+void s3_config_callback(const char *key, const char *value, void *ctx) {
     S3Client *s3 = (S3Client *)ctx;
+    if (!key || !value) return;
     if (strcmp(key, "endpoint") == 0) {
         s3->endpoint = strdup(value);
     } else if (strcmp(key, "region") == 0) {
@@ -77,13 +78,13 @@ char *s3_upload_message(int account_id, int mailbox_id, int message_uid, const c
     struct curl_slist *headers = NULL;
 
     // Generate AWS signature
+    (void)content_type; /* currently unused in simple uploader */
     time_t now = time(NULL);
     struct tm *tm = gmtime(&now);
     char date[64];
     strftime(date, sizeof(date), "%Y%m%dT%H%M%SZ", tm);
 
-    char signature[512];
-    // Generate signature header
+    /* signature generation omitted for this simplified implementation */
 
     headers = curl_slist_append(headers, "x-amz-content-sha256: UNSIGNED-PAYLOAD");
     headers = curl_slist_append(headers, "Content-Type: application/octet-stream");
@@ -185,8 +186,8 @@ FILE *s3_download_message_file(const char *s3_key, size_t *size) {
         return NULL;
     }
 
-    double downloaded = 0.0;
-    curl_easy_getinfo(curl, CURLINFO_SIZE_DOWNLOAD, &downloaded);
+    curl_off_t downloaded = 0;
+    curl_easy_getinfo(curl, CURLINFO_SIZE_DOWNLOAD_T, &downloaded);
     if (size)
         *size = (size_t)downloaded;
 
@@ -250,16 +251,26 @@ char *s3_generate_key(int account_id, int mailbox_id, int message_uid) {
 }
 
 char *sha256_hash(const char *input) {
-    static char outputBuffer[65];
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256_CTX sha256;
-    SHA256_Init(&sha256);
-    SHA256_Update(&sha256, input, strlen(input));
-    SHA256_Final(hash, &sha256);
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
-        snprintf(outputBuffer + (i * 2), 3, "%02x", hash[i]);
+    unsigned char hash[EVP_MAX_MD_SIZE];
+    unsigned int hash_len = 0;
+
+    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+    if (!mdctx) return NULL;
+    if (EVP_DigestInit_ex(mdctx, EVP_sha256(), NULL) != 1) {
+        EVP_MD_CTX_free(mdctx);
+        return NULL;
     }
-    outputBuffer[64] = '\0';
+    EVP_DigestUpdate(mdctx, input, strlen(input));
+    EVP_DigestFinal_ex(mdctx, hash, &hash_len);
+    EVP_MD_CTX_free(mdctx);
+
+    char *outputBuffer = malloc((hash_len * 2) + 1);
+    if (!outputBuffer) return NULL;
+
+    for (unsigned int i = 0; i < hash_len; i++) {
+        sprintf(outputBuffer + (i * 2), "%02x", hash[i]);
+    }
+    outputBuffer[hash_len * 2] = '\0';
     return outputBuffer;
 }
 

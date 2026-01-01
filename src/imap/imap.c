@@ -29,8 +29,8 @@
 // #define MAX_RESPONSE_LENGTH 4096 // 4KB
 // #define SESSION_TIMEOUT 1800 // 30 minutes
 
-void imap_config_callback(const char *key, const char *value) {
-    ImapConfig *cfg = (ImapConfig *)value;
+void imap_config_callback(const char *key, const char *value, void *ctx) {
+    ImapConfig *cfg = (ImapConfig *)ctx;
 
     if (strcmp(key, "port") == 0) {
         cfg->port = atoi(value);
@@ -93,8 +93,7 @@ int start_imap() {
 
     get_config_section("imap", imap_config_callback, &cfg);
 
-    int imap_socket;
-    int server_socket, ssl_server_socket;
+    int server_socket = -1, ssl_server_socket = -1;
     struct sockaddr_in server_addr, ssl_server_addr;
     pthread_t thread_id;
     SSL_CTX *ssl_ctx = NULL;
