@@ -1,5 +1,6 @@
 #include "imap.h"
 #include <ctype.h>
+#include <log.h>
 
 // Response functions
 void send_response(ClientState *client, const char *response) {
@@ -14,24 +15,51 @@ void send_untagged(ClientState *client, const char *message) {
     char response[MAX_RESPONSE_LENGTH];
     snprintf(response, sizeof(response), "* %s\r\n", message);
     send_response(client, response);
+    LOGI("IMAP [UNTAGGED]: %s", response);
 }
 
 void send_tagged_ok(ClientState *client, const char *tag, const char *message) {
     char response[MAX_RESPONSE_LENGTH];
     snprintf(response, sizeof(response), "%s OK %s\r\n", tag, message);
     send_response(client, response);
+    client->bad_count = 0;
+    LOGI("IMAP [OK]: %s", response);
 }
 
 void send_tagged_no(ClientState *client, const char *tag, const char *message) {
     char response[MAX_RESPONSE_LENGTH];
     snprintf(response, sizeof(response), "%s NO %s\r\n", tag, message);
     send_response(client, response);
+    client->bad_count++;
+    if (client->bad_count >= 3) {
+        send_untagged(client, "Tomany bad commands, closing connection");
+        LOGW("IMAP: Tomany bad commands, closing connection\n");
+        close(client->socket);
+        if (client->use_ssl && client->ssl) {
+            SSL_free(client->ssl);
+        }
+        free(client);
+        imap_decrement_client();
+    }
+    LOGI("IMAP [NO]: %s", response);
 }
 
 void send_tagged_bad(ClientState *client, const char *tag, const char *message) {
     char response[MAX_RESPONSE_LENGTH];
     snprintf(response, sizeof(response), "%s BAD %s\r\n", tag, message);
     send_response(client, response);
+    client->bad_count++;
+    if (client->bad_count >= 3) {
+        send_untagged(client, "Tomany bad commands, closing connection");
+        LOGW("IMAP: Tomany bad commands, closing connection\n");
+        close(client->socket);
+        if (client->use_ssl && client->ssl) {
+            SSL_free(client->ssl);
+        }
+        free(client);
+        imap_decrement_client();
+    }
+    LOGI("IMAP [BAD]: %s", response);
 }
 
 /* Send raw bytes to client (useful for streaming binary/message content) */
@@ -72,7 +100,8 @@ int parse_command(char *buffer, char *tag, char *command, char *args) {
 
     ptr++; // Skip space
     size_t arglen = strlen(ptr);
-    if (arglen > MAX_BUFFER_SIZE - 1) arglen = MAX_BUFFER_SIZE - 1;
+    if (arglen > MAX_BUFFER_SIZE - 1)
+        arglen = MAX_BUFFER_SIZE - 1;
     memcpy(args, ptr, arglen);
     args[arglen] = '\0';
 

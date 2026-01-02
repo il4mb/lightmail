@@ -1,28 +1,23 @@
 #include "lightmail.h"
-#include "conf.h"
-#include "log.h"
-#include "parser.h"
-#include "shutdown.h"
-#include "pop3.h"
+#include "db.h"
+#include "imap.h"
 #include "lmtp.h"
 #include "lmtp_queue.h"
-#include "metrics.h"
-#include "imap.h"
-#include "db.h"
 #include "lock.h"
+#include "log.h"
+#include "metrics.h"
+#include "parser.h"
+#include "pop3.h"
+// #include "shutdown.h"
 #include <dlfcn.h>
 #include <getopt.h>
+#include <poll.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/stat.h>
-#include <pthread.h>
-#include <poll.h>
-
-// Thread wrappers to use with pthread_create
-static void *start_pop3_thread(void *arg) { (void)arg; start_pop3(); return NULL; }
-static void *start_lmtp_thread(void *arg) { (void)arg; start_lmtp(); return NULL; }
+#include <unistd.h>
 
 // Command line options structure
 typedef struct {
@@ -30,35 +25,49 @@ typedef struct {
     int reload;
     int help;
     int version;
+    int stop;
 } CommandOptions;
 
 void args_callback(const char *k, const char *v, void *ctx) {
+
     CommandOptions *s = (CommandOptions *)ctx;
-    // Safety check: k should always exist, but let's be sure
-    if (!k || strlen(k) < 2)
+    if (!k || strlen(k) < 2) {
+        return;
+    }
+
+    while (k[0] == '-')
+        k++;
+    if (strlen(k) == 0)
         return;
 
-    switch (k[1]) {
-    case 'c':
-        if (v) { // Always check if v is NULL (user forgot the filename)
-            strncpy(s->config_file, v, sizeof(s->config_file) - 1);
-            s->config_file[sizeof(s->config_file) - 1] = '\0';
-        } else {
-            fprintf(stderr, "Error: Option -c requires a configuration file path.\n");
+    if (strlen(k) == 1) {
+        switch (*k) {
+        case 'c':
+            if (v) { // Always check if v is NULL (user forgot the filename)
+                strncpy(s->config_file, v, sizeof(s->config_file) - 1);
+                s->config_file[sizeof(s->config_file) - 1] = '\0';
+            } else {
+                fprintf(stderr, "Error: Option -c requires a configuration file path.\n");
+            }
+            break;
+        case 'h':
+            s->help = 1;
+            break;
+        case 'V':
+            s->version = 1;
+            break;
+        default:
+            printf("Unknown option: %s\n", k);
+            break;
         }
-        break;
-    case 'h':
-        s->help = 1;
-        break;
-    case 'V':
-        s->version = 1;
-        break;
-    case 'r':
+    }
+    if (strcmp(k, "stop") == 0) {
+        s->stop = 1;
+        return;
+    }
+    if (strcmp(k, "reload") == 0) {
         s->reload = 1;
-        break;
-    default:
-        printf("Unknown option: %s\n", k);
-        break;
+        return;
     }
 }
 
@@ -109,113 +118,39 @@ int main(int argc, char *argv[]) {
     CommandOptions opts = {0};
     parse_command_line(argc, argv, args_callback, &opts);
 
-    if(opts.help) {
+    if (opts.stop) {
+        printf("Stopping LightMail IMAP Server v1.0\n");
+        stop_services();
+        return EXIT_SUCCESS;
+    }
+
+    if (opts.help) {
         print_usage(argv[0]);
         return EXIT_SUCCESS;
     }
 
-    if(opts.version) {
+    if (opts.version) {
         print_version();
         return EXIT_SUCCESS;
     }
 
+    printf("LightMail Server v1.0\n");
+    const char *config_path = "/etc/lightmail/lightmail.conf";
+    if (opts.config_file[0] != '\0') {
+        config_path = opts.config_file;
+    }
 
-
-    if (opts.reload == 0 && is_already_running()) {
-        fprintf(stderr, "LightMail is already running\n");
+    if (init_config(config_path) == EXIT_FAILURE) {
+        printf("Failed to load configuration: %s\n", config_path);
+        fprintf(stderr, "Failed to load configuration: %s\n", config_path);
+        LOGE("Failed to load configuration");
         return EXIT_FAILURE;
     }
 
-    if (init_config(opts.config_file) == EXIT_FAILURE) {
-        return EXIT_FAILURE;
-    }
-    LOGI("Using configuration file: %s", opts.config_file);
-
-    /* Create a pipe so child can notify parent of startup success/failure */
-    int status_pipe[2];
-    if (pipe(status_pipe) == 0) {
-        /* status_pipe[0] = read end (parent), status_pipe[1] = write end (child) */
-        /* mark fds close-on-exec so they don't leak to child execs */
-        /* parent will close write end after fork, child closes read end */
-    } else {
-        status_pipe[0] = status_pipe[1] = -1;
-    }
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        perror("fork");
-        return EXIT_FAILURE;
-    }
-
-    if (pid > 0) {
-        /* Parent: wait for child to report startup status, with timeout */
-        if (status_pipe[0] >= 0) close(status_pipe[1]);
-        int rc = 0;
-        if (status_pipe[0] >= 0) {
-            struct pollfd pfd;
-            pfd.fd = status_pipe[0];
-            pfd.events = POLLIN;
-            int poll_rc = poll(&pfd, 1, 3000); /* 3s timeout */
-            if (poll_rc == 1 && (pfd.revents & POLLIN)) {
-                int child_status = -1;
-                ssize_t r = read(status_pipe[0], &child_status, sizeof(child_status));
-                (void)r;
-                if (child_status == 0) {
-                    printf("LightMail started (PID %d)\n", pid);
-                    rc = EXIT_SUCCESS;
-                } else {
-                    fprintf(stderr, "LightMail failed to start (see logs for details).\n");
-                    rc = EXIT_FAILURE;
-                }
-            } else if (poll_rc == 0) {
-                fprintf(stderr, "LightMail startup timed out, child did not report status (see logs for details).\n");
-                rc = EXIT_FAILURE;
-            } else {
-                /* poll error */
-                perror("poll error during startup");
-                rc = EXIT_FAILURE;
-            }
-            close(status_pipe[0]);
-        } else {
-            /* no pipe available, fallback to optimistic start */
-            fprintf(stderr, "LightMail started without status pipe (PID %d). Check logs for errors.\n", pid);
-            rc = EXIT_SUCCESS;
-        }
-        return rc;
-    }
-
-    // ---- CHILD (DAEMON) ----
-    /* Child closes the read end of the pipe and keeps write end to notify parent */
-    if (status_pipe[0] >= 0) {
-        close(status_pipe[0]);
-        startup_notify_fd = status_pipe[1];
-    }
-
-    umask(0);
-
-    if (setsid() < 0) {
-        if (startup_notify_fd >= 0) {
-            int err = 1; (void)write(startup_notify_fd, &err, sizeof(err)); close(startup_notify_fd);
-        }
-        _exit(1);
-    }
-
-    chdir("/");
-
-    int fd = open("/dev/null", O_RDWR);
-    dup2(fd, STDIN_FILENO);
-    dup2(fd, STDOUT_FILENO);
-    dup2(fd, STDERR_FILENO);
-    if (fd > 2)
-        close(fd);
-
-    // Now safe to initialize logging & signals
-    setup_signal_handlers();
     /* Initialize logging using configured path if provided so the daemon writes to file by default */
     const char *lpath = get_config_value("logging", "path");
     if (lpath) {
         if (log_init(lpath, LOG_OUTPUT_FILE) != 0) {
-            /* fallback to stdout if file init fails */
             log_init(NULL, LOG_OUTPUT_STDOUT);
         }
     } else {
@@ -225,26 +160,33 @@ int main(int argc, char *argv[]) {
     /* Initialize database connections */
     if (db_init() == EXIT_FAILURE) {
         LOGE("Database initialization failed, aborting startup");
-        /* Notify parent of failure if pipe available */
-        if (startup_notify_fd >= 0) {
-            int err = 1;
-            (void)write(startup_notify_fd, &err, sizeof(err));
-            close(startup_notify_fd);
-        }
-        _exit(1);
+        exit(1);
     }
 
-    /* Start POP3 service */
-    pthread_t pop3_thread;
-    if (pthread_create(&pop3_thread, NULL, start_pop3_thread, NULL) == 0) {
-        pthread_detach(pop3_thread);
+    /* Initialize IMAP server */
+    if (imap_init() == EXIT_FAILURE) {
+        LOGE("IMAP server failed to start, aborting startup");
+        exit(1);
     }
 
-    /* Start LMTP service */
-    pthread_t lmtp_thread;
-    if (pthread_create(&lmtp_thread, NULL, start_lmtp_thread, NULL) == 0) {
-        pthread_detach(lmtp_thread);
+
+    /* Change to root directory to avoid locking current directory */
+    if (chdir("/") != 0) {
+        /* If can't change to root, try /tmp */
+        chdir("/tmp");
     }
+    int devnull = open("/dev/null", O_RDWR);
+    if (devnull != -1) {
+        dup2(devnull, STDIN_FILENO);
+        dup2(devnull, STDOUT_FILENO);
+        dup2(devnull, STDERR_FILENO);
+        if (devnull > 2)
+            close(devnull);
+    }
+
+    run_in_background(imap_start, lpath);
+    run_in_background(lmtp_start, lpath);
+    run_in_background(pop3_start, lpath);
 
     /* Start metrics server if configured */
     int metrics_port = get_config_int("service", "metrics_port", 0);
@@ -258,31 +200,5 @@ int main(int argc, char *argv[]) {
         memory_sampler_init(mem_interval);
     }
 
-    /* Start LMTP queue manager */
     lmtp_queue_init(get_config_int("service", "lmtp_queue_capacity", 256));
-
-    /* Start IMAP server (runs in its own thread now) */
-    if (start_imap() != 0) {
-        LOGE("IMAP server failed to start, aborting startup");
-        if (startup_notify_fd >= 0) {
-            int err = 1;
-            (void)write(startup_notify_fd, &err, sizeof(err));
-            close(startup_notify_fd);
-        }
-        _exit(1);
-    }
-
-    /* Notify parent we're up */
-    if (startup_notify_fd >= 0) {
-        int ok = 0;
-        (void)write(startup_notify_fd, &ok, sizeof(ok));
-        close(startup_notify_fd);
-    }
-
-    /* Child continues running the services (IMAP runs in its own thread) */
-
-    // Graceful shutdown
-    free_config();
-    LOG_CLOSE();
-    _exit(0);
 }

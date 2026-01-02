@@ -1,21 +1,20 @@
-#include "imap.h"
-#include "db.h"
-#include "imap-client.h"
-#include "imap-ssl.h"
-#include "log.h"
-#include "mailbox.h"
-#include "s3.h"
-#include "shutdown.h"
-#include "metrics.h"
-
 #include <arpa/inet.h>
-#include <conf.h>
 #include <ctype.h>
+#include <db.h>
 #include <fcntl.h>
+#include <imap-client.h>
+#include <imap-ssl.h>
+#include <imap.h>
+#include <lightmail.h>
+#include <log.h>
+#include <mailbox.h>
+#include <metrics.h>
 #include <netinet/in.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <pthread.h>
+#include <s3.h>
+// #include <shutdown.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,11 +22,6 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
-
-// #define MAX_TAG_LENGTH 64 // 64 bytes
-// #define MAX_COMMAND_LENGTH 64 // 64 bytes
-// #define MAX_RESPONSE_LENGTH 4096 // 4KB
-// #define SESSION_TIMEOUT 1800 // 30 minutes
 
 void imap_config_callback(const char *key, const char *value, void *ctx) {
     ImapConfig *cfg = (ImapConfig *)ctx;
@@ -55,11 +49,10 @@ ImapConfig cfg = {
     .buffer_size = 8192,
     .max_message_size = 10 * 1024 * 1024 /* 10MB default */};
 
-ImapConfig *get_config_imap() {
+ImapConfig *imap_get_config() {
     return &cfg;
 }
 
-bool IS_IMAP_RUNNING = false;
 
 /* Track current client count and enforce max_clients */
 static int current_clients = 0;
@@ -82,7 +75,8 @@ int imap_increment_client(void) {
 
 void imap_decrement_client(void) {
     pthread_mutex_lock(&clients_lock);
-    if (current_clients > 0) current_clients--;
+    if (current_clients > 0)
+        current_clients--;
     pthread_mutex_unlock(&clients_lock);
 
     /* Metrics: decrement IMAP sessions */
@@ -96,20 +90,23 @@ typedef struct {
     SSL_CTX *ssl_ctx;
 } ImapServerContext;
 
-static void *imap_server_loop(void *arg) {
-    ImapServerContext *ctx = (ImapServerContext *)arg;
+ImapServerContext *ctx = NULL;
+bool is_running = false;
+
+void imap_stop() {
+    is_running = false;
+}
+
+int imap_start() {
+
     int server_socket = ctx->server_socket;
     int ssl_server_socket = ctx->ssl_server_socket;
     SSL_CTX *ssl_ctx = ctx->ssl_ctx;
 
-    pthread_t thread_id;
-
-    IS_IMAP_RUNNING = true;
-
     /* client_addr is used per-connection below */
     LOGI("IMAP server loop started");
-
-    while (1) {
+    is_running = true;
+    while (is_running) {
         struct sockaddr_in client_addr_local;
         socklen_t client_len_local = sizeof(client_addr_local);
 
@@ -130,6 +127,12 @@ static void *imap_server_loop(void *arg) {
         client_state->socket = client_socket;
         client_state->ssl = NULL;
         client_state->use_ssl = 0;
+        client_state->authenticated = 0;
+        client_state->welcome_sent = 0;
+        client_state->bad_count = 0;
+        client_state->account = NULL;
+        client_state->current_mailbox = NULL;
+
         inet_ntop(AF_INET, &client_addr_local.sin_addr, client_state->client_ip, INET6_ADDRSTRLEN);
         client_state->client_port = ntohs(client_addr_local.sin_port);
 
@@ -145,7 +148,9 @@ static void *imap_server_loop(void *arg) {
         }
 
         // Create thread for client
+        pthread_t thread_id;
         if (pthread_create(&thread_id, NULL, handle_client, client_state) != 0) {
+            LOGI("Failed to create thread for client");
             close(client_socket);
             imap_decrement_client();
             free(client_state);
@@ -153,25 +158,36 @@ static void *imap_server_loop(void *arg) {
         }
         pthread_detach(thread_id);
     }
+    LOGI("IMAP server loop stopped");
 
     /* cleanup */
-    if (server_socket >= 0) close(server_socket);
-    if (ssl_server_socket >= 0) close(ssl_server_socket);
-    if (ssl_ctx) SSL_CTX_free(ssl_ctx);
+    if (server_socket >= 0)
+        close(server_socket);
+    if (ssl_server_socket >= 0)
+        close(ssl_server_socket);
+    if (ssl_ctx)
+        SSL_CTX_free(ssl_ctx);
     free(ctx);
+    ctx = NULL;
 
-    LOGI("IMAP server loop stopped");
-    IS_IMAP_RUNNING = false;
-    return NULL;
+    return 0;
 }
 
-int start_imap() {
+int imap_init() {
 
+    LOGI("Loading IMAP configuration");
     get_config_section("imap", imap_config_callback, &cfg);
+    LOGI("IMAP Config: port=%d, ssl_port=%d, max_clients=%d, timeout=%d, buffer_size=%d, max_message_size=%zu", cfg.port, cfg.ssl_port, cfg.max_clients, cfg.timeout, cfg.buffer_size, cfg.max_message_size);
 
+    ctx = malloc(sizeof(ImapServerContext));
+    if (!ctx) {
+        LOGE("Failed to allocate memory for IMAP server context");
+        return 1;
+    }
+
+    
     int server_socket = -1, ssl_server_socket = -1;
     struct sockaddr_in server_addr, ssl_server_addr;
-    pthread_t thread_id;
     SSL_CTX *ssl_ctx = NULL;
 
     int port_available = is_port_available(cfg.port);
@@ -255,9 +271,6 @@ int start_imap() {
         return 1;
     }
 
-    LOGI("IMAP server started on port %d", cfg.port);
-    printf("IMAP server listening on port %d\n", cfg.port);
-
     // Create SSL IMAP socket if SSL is available
     if (ssl_ctx) {
         ssl_server_socket = socket(AF_INET, SOCK_STREAM, 0);
@@ -273,6 +286,7 @@ int start_imap() {
                 printf("IMAPS server listening on port %d\n", cfg.ssl_port);
 
                 // Create thread for SSL server
+                pthread_t thread_id;
                 pthread_create(&thread_id, NULL, ssl_server_thread, (void *)ssl_ctx);
                 pthread_detach(thread_id);
             } else {
@@ -282,30 +296,19 @@ int start_imap() {
         }
     }
 
-    /* spawn background accept loop so start_imap can return success to the caller */
-    ImapServerContext *ctx = malloc(sizeof(ImapServerContext));
     if (!ctx) {
-        if (server_socket >= 0) close(server_socket);
-        if (ssl_server_socket >= 0) close(ssl_server_socket);
-        if (ssl_ctx) SSL_CTX_free(ssl_ctx);
+        if (server_socket >= 0)
+            close(server_socket);
+        if (ssl_server_socket >= 0)
+            close(ssl_server_socket);
+        if (ssl_ctx)
+            SSL_CTX_free(ssl_ctx);
         return 1;
     }
+    
     ctx->server_socket = server_socket;
     ctx->ssl_server_socket = ssl_server_socket;
     ctx->ssl_ctx = ssl_ctx;
 
-    if (pthread_create(&thread_id, NULL, imap_server_loop, ctx) != 0) {
-        if (server_socket >= 0) close(server_socket);
-        if (ssl_server_socket >= 0) close(ssl_server_socket);
-        if (ssl_ctx) SSL_CTX_free(ssl_ctx);
-        free(ctx);
-        return 1;
-    }
-    pthread_detach(thread_id);
-
     return 0;
-}
-
-bool is_imap_running() {
-    return IS_IMAP_RUNNING;
 }

@@ -1,3 +1,6 @@
+#ifndef LIGHTMAIL_LOG_H
+#define LIGHTMAIL_LOG_H
+
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -36,8 +39,7 @@ int log_reload_config(void);
 void log_set_level(const char *service, log_level_t level);
 
 /* Emit a log message */
-void log_emit(log_level_t level, const char *service, const char *user, 
-              const char *session, const char *fmt, ...);
+void log_emit(log_level_t level, const char *fmt, ...);
 
 /* Get dropped message count (for diagnostics) */
 unsigned int log_dropped_count(void);
@@ -50,21 +52,10 @@ unsigned int log_dropped_count(void);
 #define LOG_CLOSE() log_close()
 
 /* Log level macros for compatibility */
-#define LOGD(fmt, ...) log_emit(LOG_LEVEL_DEBUG, "main", NULL, NULL, fmt, ##__VA_ARGS__)
-#define LOGI(fmt, ...) log_emit(LOG_LEVEL_INFO, "main", NULL, NULL, fmt, ##__VA_ARGS__)
-#define LOGW(fmt, ...) log_emit(LOG_LEVEL_WARN, "main", NULL, NULL, fmt, ##__VA_ARGS__)
-#define LOGE(fmt, ...) log_emit(LOG_LEVEL_ERROR, "main", NULL, NULL, fmt, ##__VA_ARGS__)
-#define LOGF(fmt, ...) do { log_emit(LOG_LEVEL_CRITICAL, "main", NULL, NULL, fmt, ##__VA_ARGS__); log_close(); _exit(1); } while(0)
+#define LOGD(fmt, ...) log_emit(LOG_LEVEL_DEBUG, fmt, ##__VA_ARGS__)
+#define LOGI(fmt, ...) log_emit(LOG_LEVEL_INFO, fmt, ##__VA_ARGS__)
+#define LOGW(fmt, ...) log_emit(LOG_LEVEL_WARN, fmt, ##__VA_ARGS__)
+#define LOGE(fmt, ...) log_emit(LOG_LEVEL_ERROR, fmt, ##__VA_ARGS__)
+#define LOGF(fmt, ...) do { log_emit(LOG_LEVEL_CRITICAL, fmt, ##__VA_ARGS__); log_close(); _exit(1); } while(0)
 
-/* Service-specific log macros */
-#define LOG_IMAP(level, fmt, ...) log_emit(level, "imap", NULL, NULL, fmt, ##__VA_ARGS__)
-#define LOG_POP3(level, fmt, ...) log_emit(level, "pop3", NULL, NULL, fmt, ##__VA_ARGS__)
-#define LOG_DB(level, fmt, ...) log_emit(level, "db", NULL, NULL, fmt, ##__VA_ARGS__)
-
-/* Convenience service-specific macros that take the service name as first arg */
-#define LOGD_S(service, fmt, ...) log_emit(LOG_LEVEL_DEBUG, service, NULL, NULL, fmt, ##__VA_ARGS__)
-#define LOGI_S(service, fmt, ...) log_emit(LOG_LEVEL_INFO, service, NULL, NULL, fmt, ##__VA_ARGS__)
-#define LOGW_S(service, fmt, ...) log_emit(LOG_LEVEL_WARN, service, NULL, NULL, fmt, ##__VA_ARGS__)
-#define LOGE_S(service, fmt, ...) log_emit(LOG_LEVEL_ERROR, service, NULL, NULL, fmt, ##__VA_ARGS__)
-#define LOGF_S(service, fmt, ...) do { log_emit(LOG_LEVEL_CRITICAL, service, NULL, NULL, fmt, ##__VA_ARGS__); log_close(); _exit(1); } while(0)
-
+#endif

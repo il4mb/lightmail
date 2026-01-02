@@ -11,8 +11,8 @@ AC_PROG_CC
 
 AC_CHECK_HEADERS([
     mysql/mysql.h
-    openssl/evp.h,
-    openssl/rand.h,
+    openssl/evp.h
+    openssl/rand.h
     syslog.h
     unistd.h
     stdlib.h

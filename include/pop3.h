@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-void start_pop3(void);
+void pop3_start(void);
 void pop3_user_login(const char *user);
 void pop3_user_login_failed(const char *user);
 

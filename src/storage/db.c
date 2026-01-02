@@ -1,5 +1,5 @@
 #include "db.h"
-#include "conf.h"
+#include "lightmail.h"
 #include "password.h"
 #include "metrics.h"
 #include <time.h>
@@ -23,7 +23,6 @@ void config_callback(const char *key, const char *value, void *ctx) {
     } else if (strcmp(key, "name") == 0) {
         db_config->name = strdup(value);
     } else if (strcmp(key, "database") == 0) {
-        /* Support alternate key name used in config files */
         db_config->name = strdup(value);
     } else if (strcmp(key, "socket") == 0) {
         db_config->socket = strdup(value);
@@ -53,20 +52,6 @@ int db_init(void) {
     if(!cfg.host || !cfg.user || !cfg.password || !cfg.name) {
         fprintf(stderr, "Database configuration is incomplete\n");
         return EXIT_FAILURE;
-    }
-
-    printf("Database Config:\n");
-    printf(" Host: %s\n", cfg.host);
-    printf(" User: %s\n", cfg.user);
-    printf(" Name: %s\n", cfg.name);
-    printf(" Port: %d\n", cfg.port);
-    printf(" Pool Size: %d\n", cfg.pool_size);
-
-    /* Debug: persist DB config so we can inspect whether initialization ran */
-    FILE *df = fopen("/tmp/db-init.log", "a");
-    if (df) {
-        fprintf(df, "DB Config: host=%s user=%s name=%s port=%d pool=%d\n", cfg.host, cfg.user, cfg.name, cfg.port, cfg.pool_size);
-        fclose(df);
     }
 
     pthread_mutex_init(&connection_pool.lock, NULL);

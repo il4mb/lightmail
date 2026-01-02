@@ -1,5 +1,5 @@
 #include "s3.h"
-#include "conf.h"
+#include "lightmail.h"
 #include "metrics.h"
 #include <curl/curl.h>
 #include <openssl/hmac.h>

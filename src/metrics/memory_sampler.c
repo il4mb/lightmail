@@ -1,5 +1,5 @@
 #include "metrics.h"
-#include "conf.h"
+#include <lightmail.h>
 #include "log.h"
 #include <pthread.h>
 #include <sys/sysinfo.h>
@@ -34,7 +34,7 @@ int memory_sampler_init(int interval_seconds) {
         g_mem_running = 0;
         return -1;
     }
-    LOGI_S("metrics", "Memory sampler started with interval %d s", interval_seconds);
+    LOGI("metrics", "Memory sampler started with interval %d s", interval_seconds);
     return 0;
 }
 

@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
 #include "metrics.h"
-#include "conf.h"
+#include <lightmail.h>
 #include "log.h"
 #include <stdatomic.h>
 #include <sys/types.h>
@@ -138,7 +138,7 @@ int metrics_init(int port) {
         return -1;
     }
 
-    LOGI_S("metrics", "Metrics server started on port %d", metrics_port);
+    LOGI("metrics", "Metrics server started on port %d", metrics_port);
     return 0;
 }
 

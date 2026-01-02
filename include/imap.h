@@ -19,7 +19,7 @@ typedef struct {
     int max_clients;
     int timeout;
     int buffer_size;
-    size_t max_message_size; /* maximum allowed message size in bytes */
+    size_t max_message_size; 
 } ImapConfig;
 
 // IMAP session state
@@ -28,6 +28,8 @@ typedef struct {
     SSL *ssl;
     int use_ssl;
     int authenticated;
+    int welcome_sent;
+    int bad_count;
     Account *account;
     Mailbox *current_mailbox;
     char current_mailbox_name[256];
@@ -37,9 +39,10 @@ typedef struct {
     int client_port;
 } ClientState;
 
-ImapConfig *get_config_imap();
-int start_imap();
-bool is_imap_running();
+ImapConfig *imap_get_config();
+int imap_init();
+int imap_start();
+void imap_stop();
 int imap_increment_client(void);
 void imap_decrement_client(void);
 

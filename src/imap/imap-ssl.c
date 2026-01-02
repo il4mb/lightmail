@@ -1,10 +1,10 @@
 
-#include "imap-ssl.h"
-#include "conf.h"
-#include "imap-client.h"
-#include "imap.h"
-#include "log.h"
 #include <arpa/inet.h>
+#include <imap-client.h>
+#include <imap-ssl.h>
+#include <imap.h>
+#include <lightmail.h>
+#include <log.h>
 #include <netinet/in.h>
 #include <openssl/err.h>
 #include <openssl/ssl.h>
@@ -47,7 +47,7 @@ SSL_CTX *init_ssl(void) {
 // SSL server thread function
 void *ssl_server_thread(void *arg) {
 
-    const ImapConfig *cfg = get_config_imap();
+    const ImapConfig *cfg = imap_get_config();
 
     SSL_CTX *ssl_ctx = (SSL_CTX *)arg;
     int ssl_server_socket = socket(AF_INET, SOCK_STREAM, 0);

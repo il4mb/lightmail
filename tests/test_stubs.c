@@ -1,4 +1,4 @@
-#include "conf.h"
+#include <lightmail.h>
 #include "../include/metrics.h"
 #include <stdint.h>
 

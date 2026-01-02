@@ -1,12 +1,12 @@
-#include "conf.h"
-#include "imap.h"
-#include "imap-client.h"
-#include "db.h"
-#include "s3.h"
-#include "log.h"
-#include "metrics.h"
 #include <ctype.h>
+#include <db.h>
+#include <imap-client.h>
+#include <imap.h>
+#include <lightmail.h>
+#include <log.h>
+#include <metrics.h>
 #include <openssl/err.h>
+#include <s3.h>
 
 // Validate session timeout
 int check_session_timeout(ClientState *client) {
@@ -51,6 +51,11 @@ void handle_noop(ClientState *client, const char *tag) {
 
 // Handle LOGIN command
 void handle_login(ClientState *client, const char *tag, const char *args) {
+
+    if(client->authenticated) {
+        send_tagged_no(client, tag, "Already authenticated");
+        return;
+    }
     if (client->use_ssl && !client->ssl) {
         send_tagged_no(client, tag, "LOGIN disabled, use STARTTLS first");
         return;
@@ -114,12 +119,7 @@ void handle_login(ClientState *client, const char *tag, const char *args) {
     // Get account from database (pass original username as stored may include domain)
     Account *account = db_get_account_by_username(username);
     if (!account) {
-        /* Debug: write missing account info to tmp file for local troubleshooting */
-        FILE *fp = fopen("/tmp/imap-debug.log", "a");
-        if (fp) {
-            fprintf(fp, "LOGIN: account not found for username='%s' domain='%s' from_ip=%s\n", username, domain[0] ? domain : "(none)", client->client_ip);
-            fclose(fp);
-        }
+        LOGE("LOGIN: account not found for username='%s' domain='%s' from_ip=%s\n", username, domain[0] ? domain : "(none)", client->client_ip);
         metrics_inc_auth_failures();
         send_tagged_no(client, tag, "LOGIN failed");
         return;
@@ -128,13 +128,7 @@ void handle_login(ClientState *client, const char *tag, const char *args) {
     // Verify password
     if (!db_verify_password(account, password)) {
         /* Log failed login */
-        log_emit(LOG_LEVEL_WARN, "auth", account->username, NULL, "LOGIN failed for user=%s from_ip=%s", account->username, client->client_ip);
-        /* Debug: write failed password attempt to tmp file */
-        FILE *fp = fopen("/tmp/imap-debug.log", "a");
-        if (fp) {
-            fprintf(fp, "LOGIN: password verification failed for username='%s' email='%s' from_ip=%s\n", username, account->username ? account->username : "(nil)", client->client_ip);
-            fclose(fp);
-        }
+        LOGE("LOGIN failed for user=%s from_ip=%s", account->username, client->client_ip);
         metrics_inc_auth_failures();
         db_free_account(account);
         send_tagged_no(client, tag, "LOGIN failed");
@@ -151,14 +145,7 @@ void handle_login(ClientState *client, const char *tag, const char *args) {
     snprintf(client->session_id, sizeof(client->session_id), "%.32s-%.32s-%ld", user_only, domain, (long)time(NULL));
 
     /* Log successful login */
-    log_emit(LOG_LEVEL_INFO, "auth", client->account ? client->account->username : NULL, client->session_id, "LOGIN success from_ip=%s", client->client_ip);
-
-    /* Debug: record authenticated account */
-    FILE *fp = fopen("/tmp/imap-debug.log", "a");
-    if (fp) {
-        fprintf(fp, "LOGIN SUCCESS: id=%d username=%s email=%s\n", client->account->id, client->account->username ? client->account->username : "(nil)", client->account->username ? client->account->username : "(nil)");
-        fclose(fp);
-    }
+    LOGI("LOGIN success from_ip=%s", client->client_ip);
 
     send_tagged_ok(client, tag, "LOGIN completed");
 }
@@ -569,7 +556,7 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
     }
 
     // Enforce max message size
-    const ImapConfig *cfg = get_config_imap();
+    const ImapConfig *cfg = imap_get_config();
     if (message_size > cfg->max_message_size) {
         send_tagged_no(client, tag, "Message too large");
         return;
@@ -585,8 +572,9 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
     // Send continuation response for literal data
     send_response(client, "+ Ready for literal data\r\n");
 
-    size_t buf_size = get_config_imap()->buffer_size;
-    if (buf_size < 1024) buf_size = 8192;
+    size_t buf_size = imap_get_config()->buffer_size;
+    if (buf_size < 1024)
+        buf_size = 8192;
 
     char *buffer = malloc(buf_size);
     if (!buffer) {
@@ -706,8 +694,10 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
     // Atomically allocate a UID
     int next_uid = db_allocate_uid(mailbox->id);
     if (next_uid < 0) {
-        if (tmp) fclose(tmp);
-        if (message_data) free(message_data);
+        if (tmp)
+            fclose(tmp);
+        if (message_data)
+            free(message_data);
         free(mailbox->name);
         free(mailbox->flags);
         free(mailbox->permanent_flags);
@@ -728,7 +718,8 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
     if (!s3_key) {
         /* Log failure to store */
         log_emit(LOG_LEVEL_ERROR, "imap", client->account ? client->account->username : NULL, client->session_id, "APPEND failed: s3 upload failed mailbox=%s uid=%d size=%zu", mailbox_name, next_uid, message_size);
-        if (message_data) free(message_data);
+        if (message_data)
+            free(message_data);
         free(mailbox->name);
         free(mailbox->flags);
         free(mailbox->permanent_flags);
@@ -741,7 +732,8 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
     Message *message = malloc(sizeof(Message));
     if (!message) {
         free(s3_key);
-        if (message_data) free(message_data);
+        if (message_data)
+            free(message_data);
         free(mailbox->name);
         free(mailbox->flags);
         free(mailbox->permanent_flags);
@@ -762,9 +754,11 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
 
     if (header_len > 0) {
         from = strstr(header_buf, "\nFrom:");
-        if (!from) from = strstr(header_buf, "\r\nFrom:");
+        if (!from)
+            from = strstr(header_buf, "\r\nFrom:");
         subject = strstr(header_buf, "\nSubject:");
-        if (!subject) subject = strstr(header_buf, "\r\nSubject:");
+        if (!subject)
+            subject = strstr(header_buf, "\r\nSubject:");
     }
 
     if (!from && message_data)
@@ -777,7 +771,8 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
         while (*from && isspace(*from))
             from++;
         char *end = strchr(from, '\n');
-        if (!end) end = strchr(from, '\r');
+        if (!end)
+            end = strchr(from, '\r');
         if (end) {
             int len = end - from;
             message->envelope_from = malloc(len + 1);
@@ -795,7 +790,8 @@ void handle_append(ClientState *client, const char *tag, const char *args) {
         while (*subject && isspace(*subject))
             subject++;
         char *end = strchr(subject, '\n');
-        if (!end) end = strchr(subject, '\r');
+        if (!end)
+            end = strchr(subject, '\r');
         if (end) {
             int len = end - subject;
             message->envelope_subject = malloc(len + 1);
@@ -937,8 +933,9 @@ void handle_fetch(ClientState *client, const char *tag, const char *args) {
 
             // Stream body from file
             rewind(tmp);
-            size_t bufsize = get_config_imap()->buffer_size;
-            if (bufsize < 1024) bufsize = 8192;
+            size_t bufsize = imap_get_config()->buffer_size;
+            if (bufsize < 1024)
+                bufsize = 8192;
             char *buf = malloc(bufsize);
             if (buf) {
                 size_t n;
@@ -960,8 +957,9 @@ void handle_fetch(ClientState *client, const char *tag, const char *args) {
             send_untagged(client, response);
 
             rewind(tmp);
-            size_t bufsize = get_config_imap()->buffer_size;
-            if (bufsize < 1024) bufsize = 8192;
+            size_t bufsize = imap_get_config()->buffer_size;
+            if (bufsize < 1024)
+                bufsize = 8192;
             char *buf = malloc(bufsize);
             if (buf) {
                 size_t n;
@@ -996,7 +994,8 @@ void handle_fetch(ClientState *client, const char *tag, const char *args) {
             send_untagged(client, response);
         }
 
-        if (tmp) fclose(tmp);
+        if (tmp)
+            fclose(tmp);
 
         // Free message resources
         db_free_message(msg);
@@ -1118,7 +1117,8 @@ void handle_uid(ClientState *client, const char *tag, const char *args) {
 
 // Handle EXPUNGE command
 void handle_expunge(ClientState *client, const char *tag, const char *args) {
-    (void)args;    if (!client->authenticated || !client->account || !client->current_mailbox) {
+    (void)args;
+    if (!client->authenticated || !client->account || !client->current_mailbox) {
         send_tagged_no(client, tag, "Not authenticated or no mailbox selected");
         return;
     }
@@ -1135,7 +1135,8 @@ void handle_expunge(ClientState *client, const char *tag, const char *args) {
 
 // Handle SEARCH command
 void handle_search(ClientState *client, const char *tag, const char *args) {
-    (void)args;    if (!client->authenticated || !client->account || !client->current_mailbox) {
+    (void)args;
+    if (!client->authenticated || !client->account || !client->current_mailbox) {
         send_tagged_no(client, tag, "Not authenticated or no mailbox selected");
         return;
     }
@@ -1159,7 +1160,8 @@ void handle_search(ClientState *client, const char *tag, const char *args) {
     size_t uid_pos = 0;
     for (int i = 0; i < count; i++) {
         int n = snprintf(uid_list + uid_pos, sizeof(uid_list) - uid_pos, "%d ", messages[i]->uid);
-        if (n > 0) uid_pos += (size_t)n;
+        if (n > 0)
+            uid_pos += (size_t)n;
 
         // Free message resources
         free(messages[i]->flags);
@@ -1171,7 +1173,8 @@ void handle_search(ClientState *client, const char *tag, const char *args) {
         free(messages[i]->encoding);
         free(messages[i]);
 
-        if (uid_pos >= sizeof(uid_list) - 1) break; /* avoid overflow */
+        if (uid_pos >= sizeof(uid_list) - 1)
+            break; /* avoid overflow */
     }
     free(messages);
 
@@ -1222,22 +1225,14 @@ void handle_starttls(ClientState *client, const char *tag, SSL_CTX *ssl_ctx) {
 // Client thread function
 void *handle_client(void *arg) {
 
-    const ImapConfig *cfg = get_config_imap();
+    const ImapConfig *cfg = imap_get_config();
     ClientState *client = (ClientState *)arg;
-
-    // Initialize client state
-    client->ssl = NULL;
-    client->use_ssl = 0;
-    client->authenticated = 0;
-    client->account = NULL;
-    client->current_mailbox = NULL;
-    client->current_mailbox_name[0] = '\0';
-    client->session_id[0] = '\0';
     client->last_activity = time(NULL);
 
     // Send greeting
-    send_untagged(client, "OK IMAP4rev1 Service Ready");
-
+    if (client->welcome_sent == 0) {
+        send_untagged(client, "OK IMAP4rev1 Service Ready");
+    }
     char buffer[cfg->buffer_size];
     char tag[100];
     char command[255];
@@ -1268,8 +1263,7 @@ void *handle_client(void *arg) {
         if (newline)
             *newline = '\0';
 
-        printf("[%s:%d] Received: %s\n",
-               client->client_ip, client->client_port, buffer);
+        printf("[%s:%d] Received: %s\n", client->client_ip, client->client_port, buffer);
 
         // Parse command
         if (!parse_command(buffer, tag, command, args)) {

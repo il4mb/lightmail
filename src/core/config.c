@@ -1,4 +1,4 @@
-#include "conf.h"
+#include "lightmail.h"
 #include "log.h"
 #include "parser.h"
 #include <ctype.h>

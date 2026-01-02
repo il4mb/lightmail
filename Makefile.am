@@ -1,11 +1,13 @@
 bin_PROGRAMS = lightmail
-AM_CPPFLAGS = -I$(top_srcdir)/include
+AM_CPPFLAGS = -I$(top_srcdir)/include \
+    -Wno-unused-variable \
+    -Wno-unused-function \
+    -Wno-unused-result
 
 lightmail_SOURCES = \
     src/lightmail.c \
     src/core/lock.c \
     src/core/password.c \
-    src/core/shutdown.c \
     src/core/config.c \
     src/core/dirs.c \
     src/core/mailbox.c \
@@ -27,7 +29,7 @@ lightmail_SOURCES = \
     src/metrics/memory_sampler.c \
     src/lmtp/queue.c
 
-lightmail_LDADD = -lmysqlclient -lcurl -lpthread -lcrypt -lssl -lcrypto 
+lightmail_LDADD = -lmysqlclient -lcurl -lpthread -lcrypt -lssl -lcrypto
 
 if HAVE_SYSTEMD
 lightmail_LDADD += -lsystemd
@@ -37,7 +39,7 @@ setcap:
 	sudo setcap 'cap_net_bind_service=+ep' lightmail
 
 run: lightmail setcap
-	./lightmail -c ../config/lightmail.conf
+	./lightmail -c ./config/lightmail.conf
 
 # Run unit tests
 test:

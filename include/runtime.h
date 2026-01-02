@@ -5,7 +5,7 @@
 
 typedef struct {
     MYSQL *mysql;
-    int shutting_down;
+    int is_running;
 } Runtime;
 
 extern Runtime g_runtime;

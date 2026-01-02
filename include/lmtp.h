@@ -9,6 +9,6 @@
  *
  * @return 0 on successful shutdown, -1 on error.
  */
-int start_lmtp(void);
+int lmtp_start(void);
 
 #endif // LMTP_H
