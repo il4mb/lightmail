@@ -21,6 +21,7 @@ lightmail_SOURCES = \
     src/lmtp/lmtp_session.c \
     src/imap/imap.c \
     src/imap/imap-client.c \
+    src/imap/imap-parser.c \
     src/imap/imap-send.c \
     src/imap/imap-ssl.c \
     src/log/log.c \

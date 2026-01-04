@@ -192,7 +192,7 @@ static __attribute__((unused)) int save_pid(pid_t pid) {
     return EXIT_SUCCESS;
 }
 
-static __attribute__((unused)) void run_in_background(int *(service_func)(void), char *lpath) {
+static __attribute__((unused)) void run_in_background(int *(service_func)(void)) {
     pid_t pid = fork();
     if (pid == 0) {
         setsid();

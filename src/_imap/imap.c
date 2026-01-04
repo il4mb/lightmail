@@ -53,7 +53,6 @@ ImapConfig *imap_get_config() {
     return &cfg;
 }
 
-
 /* Track current client count and enforce max_clients */
 static int current_clients = 0;
 static pthread_mutex_t clients_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -99,6 +98,7 @@ void imap_stop() {
 
 int imap_start() {
 
+    log_init();
     int server_socket = ctx->server_socket;
     int ssl_server_socket = ctx->ssl_server_socket;
     SSL_CTX *ssl_ctx = ctx->ssl_ctx;
@@ -169,7 +169,8 @@ int imap_start() {
         SSL_CTX_free(ssl_ctx);
     free(ctx);
     ctx = NULL;
-
+    log_close();
+    
     return 0;
 }
 
@@ -185,7 +186,6 @@ int imap_init() {
         return 1;
     }
 
-    
     int server_socket = -1, ssl_server_socket = -1;
     struct sockaddr_in server_addr, ssl_server_addr;
     SSL_CTX *ssl_ctx = NULL;
@@ -305,7 +305,7 @@ int imap_init() {
             SSL_CTX_free(ssl_ctx);
         return 1;
     }
-    
+
     ctx->server_socket = server_socket;
     ctx->ssl_server_socket = ssl_server_socket;
     ctx->ssl_ctx = ssl_ctx;

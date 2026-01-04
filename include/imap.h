@@ -7,6 +7,7 @@
 #include <stdbool.h>
 #include <openssl/ssl.h>
 
+#define MAX_ENVELOPE_FIELD_LEN 1024
 #define MAX_BUFFER_SIZE 8192
 #define MAX_TAG_LENGTH 64
 #define MAX_COMMAND_LENGTH 64

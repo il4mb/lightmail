@@ -22,7 +22,6 @@ socket=/run/
 
 [logging]
 path = /var/log/lightmail/lightmail.log
-level = DEBUG
 
 [ssl]
 cert_file = /var/projects/lightmail/certs/cert.pem

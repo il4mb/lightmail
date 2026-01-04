@@ -141,9 +141,6 @@ int init_config(const char *config_path) {
 
     LOGD("Config file parsed successfully\n");
 
-    /* Apply logging configuration immediately */
-    log_reload_config();
-
     // Keep a copy of the normalized path so reloads can use it
     strncpy(config_file_path, normalized_path, sizeof(config_file_path)-1);
     config_file_path[sizeof(config_file_path)-1] = '\0';

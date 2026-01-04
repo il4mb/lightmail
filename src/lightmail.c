@@ -143,19 +143,11 @@ int main(int argc, char *argv[]) {
     if (init_config(config_path) == EXIT_FAILURE) {
         printf("Failed to load configuration: %s\n", config_path);
         fprintf(stderr, "Failed to load configuration: %s\n", config_path);
-        LOGE("Failed to load configuration");
         return EXIT_FAILURE;
     }
 
-    /* Initialize logging using configured path if provided so the daemon writes to file by default */
-    const char *lpath = get_config_value("logging", "path");
-    if (lpath) {
-        if (log_init(lpath, LOG_OUTPUT_FILE) != 0) {
-            log_init(NULL, LOG_OUTPUT_STDOUT);
-        }
-    } else {
-        log_init(NULL, LOG_OUTPUT_STDOUT);
-    }
+    // initialize log
+    log_init();
 
     /* Initialize database connections */
     if (db_init() == EXIT_FAILURE) {
@@ -168,7 +160,6 @@ int main(int argc, char *argv[]) {
         LOGE("IMAP server failed to start, aborting startup");
         exit(1);
     }
-
 
     /* Change to root directory to avoid locking current directory */
     if (chdir("/") != 0) {
@@ -184,9 +175,9 @@ int main(int argc, char *argv[]) {
             close(devnull);
     }
 
-    run_in_background(imap_start, lpath);
-    run_in_background(lmtp_start, lpath);
-    run_in_background(pop3_start, lpath);
+    run_in_background(imap_start);
+    run_in_background(lmtp_start);
+    run_in_background(pop3_start);
 
     /* Start metrics server if configured */
     int metrics_port = get_config_int("service", "metrics_port", 0);
@@ -201,4 +192,9 @@ int main(int argc, char *argv[]) {
     }
 
     lmtp_queue_init(get_config_int("service", "lmtp_queue_capacity", 256));
+
+    // CLEAN UP
+    log_close();
+
+    return EXIT_SUCCESS;
 }

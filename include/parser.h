@@ -56,6 +56,16 @@ static inline void trim(void *str) {
 }
 
 /**
+ * Safe string copy that always null-terminates the destination
+ *
+ * @param dest Destination buffer
+ * @param src Source string
+ * @param dest_size Size of destination buffer (including space for null terminator)
+ * @return Number of characters copied (excluding null terminator)
+ */
+size_t safe_strncpy(char *dest, const char *src, size_t dest_size);
+
+/**
  * @brief Callback for parsed commands.
  * @param key   The flag name (e.g., "-f" or "--file")
  * @param value The associated value, or NULL if it's a boolean flag.

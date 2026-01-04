@@ -1,23 +1,28 @@
 #include "db.h"
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
+
+#ifndef DEFAULT_MAILBOX_FLAGS
+#define DEFAULT_MAILBOX_FLAGS "\\Answered \\Flagged \\Deleted \\Seen \\Draft"
+#endif
 
 // Mailbox functions
 Mailbox *db_get_mailbox(int account_id, const char *name) {
     MYSQL *conn = db_get_connection();
-    if (!conn) return NULL;
+    if (!conn)
+        return NULL;
 
     char query[1024];
     char esc_name[512] = {0};
     mysql_real_escape_string(conn, esc_name, name ? name : "", name ? (unsigned long)strlen(name) : 0);
     snprintf(query, sizeof(query),
-        "SELECT id, account_id, name, flags, permanent_flags, "
-        "uid_validity, uid_next, total_messages, unseen_messages, "
-        "recent_messages, is_subscribed, created_at, updated_at "
-        "FROM mailboxes WHERE account_id = %d AND name = '%s'",
-        account_id,
-        esc_name);
+             "SELECT id, account_id, name, flags, permanent_flags, "
+             "uid_validity, uid_next, total_messages, unseen_messages, "
+             "recent_messages, is_subscribed, created_at, updated_at "
+             "FROM mailboxes WHERE account_id = %d AND name = '%s'",
+             account_id,
+             esc_name);
 
     /* Debug: persist constructed query */
     FILE *dq = fopen("/tmp/db-query.log", "a");
@@ -75,11 +80,11 @@ Mailbox **db_get_mailboxes(int account_id, int *count) {
 
     char query[1024];
     snprintf(query, sizeof(query),
-        "SELECT id, account_id, name, flags, permanent_flags, "
-        "uid_validity, uid_next, total_messages, unseen_messages, "
-        "recent_messages, is_subscribed, created_at, updated_at "
-        "FROM mailboxes WHERE account_id = %d",
-        account_id);
+             "SELECT id, account_id, name, flags, permanent_flags, "
+             "uid_validity, uid_next, total_messages, unseen_messages, "
+             "recent_messages, is_subscribed, created_at, updated_at "
+             "FROM mailboxes WHERE account_id = %d",
+             account_id);
 
     /* Debug: persist constructed query */
     FILE *dq = fopen("/tmp/db-query.log", "a");
@@ -133,39 +138,56 @@ Mailbox **db_get_mailboxes(int account_id, int *count) {
 
 /* Free a Mailbox and its allocated fields */
 void db_free_mailbox(Mailbox *m) {
-    if (!m) return;
+    if (!m)
+        return;
     free(m->name);
     free(m->flags);
     free(m->permanent_flags);
     free(m);
-}   
+}
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-truncation"
 bool db_create_mailbox(int account_id, const char *name, const char *flags) {
     MYSQL *conn = db_get_connection();
-    if (!conn) return false;
+    if (!conn)
+        return false;
+
+    const char *use_flags = flags;
+    if (!use_flags || use_flags[0] == '\0') {
+        use_flags = DEFAULT_MAILBOX_FLAGS;
+    }
 
     char query[1024];
-    char esc_name[512] = {0}, esc_flags[512] = {0};
-    mysql_real_escape_string(conn, esc_name, name ? name : "", name ? (unsigned long)strlen(name) : 0);
-    mysql_real_escape_string(conn, esc_flags, flags ? flags : "", flags ? (unsigned long)strlen(flags) : 0);
+    char esc_name[512] = {0};
+    char esc_flags[512] = {0};
+
+    mysql_real_escape_string(
+        conn,
+        esc_name,
+        name ? name : "",
+        name ? (unsigned long)strlen(name) : 0);
+
+    mysql_real_escape_string(
+        conn,
+        esc_flags,
+        use_flags,
+        (unsigned long)strlen(use_flags));
 
     snprintf(query, sizeof(query),
-        "INSERT INTO mailboxes (account_id, name, flags, permanent_flags, "
-        "uid_validity, uid_next, total_messages, unseen_messages, "
-        "recent_messages, is_subscribed, created_at, updated_at) "
-        "VALUES (%d, '%s', '%s', '%s', %d, %d, 0, 0, 0, 1, NOW(), NOW())",
-        account_id,
-        esc_name,
-        esc_flags,
-        esc_flags, /* Permanent flags same as initial flags */
-        rand() % 100000 + 1, /* Random UID validity */
-        1); /* Initial UID next */
+             "INSERT INTO mailboxes (account_id, name, flags, permanent_flags, "
+             "uid_validity, uid_next, total_messages, unseen_messages, "
+             "recent_messages, is_subscribed, created_at, updated_at) "
+             "VALUES (%d, '%s', '%s', '%s', %d, %d, 0, 0, 0, 1, NOW(), NOW())",
+             account_id,
+             esc_name,
+             esc_flags,
+             esc_flags,
+             rand() % 100000 + 1,
+             1);
 
     bool success = db_execute_query(conn, query);
     db_release_connection(conn);
-
 #pragma GCC diagnostic pop
 
     return success;
@@ -173,12 +195,13 @@ bool db_create_mailbox(int account_id, const char *name, const char *flags) {
 
 bool db_delete_mailbox(int mailbox_id) {
     MYSQL *conn = db_get_connection();
-    if (!conn) return false;
+    if (!conn)
+        return false;
 
     char query[256];
     snprintf(query, sizeof(query),
-        "DELETE FROM mailboxes WHERE id = %d",
-        mailbox_id);
+             "DELETE FROM mailboxes WHERE id = %d",
+             mailbox_id);
 
     bool success = db_execute_query(conn, query);
     db_release_connection(conn);
@@ -188,21 +211,22 @@ bool db_delete_mailbox(int mailbox_id) {
 
 bool db_update_mailbox_stats(int mailbox_id) {
     MYSQL *conn = db_get_connection();
-    if (!conn) return false;
+    if (!conn)
+        return false;
 
     char query[512];
     snprintf(query, sizeof(query),
-        "UPDATE mailboxes SET total_messages = "
-        "(SELECT COUNT(*) FROM messages WHERE mailbox_id = %d), "
-        "unseen_messages = "
-        "(SELECT COUNT(*) FROM messages WHERE mailbox_id = %d AND "
-        "FIND_IN_SET('\\Seen', flags) = 0), "
-        "recent_messages = "
-        "(SELECT COUNT(*) FROM messages WHERE mailbox_id = %d AND "
-        "internal_date >= NOW() - INTERVAL 1 DAY), "
-        "updated_at = NOW() "
-        "WHERE id = %d",
-        mailbox_id, mailbox_id, mailbox_id, mailbox_id);
+             "UPDATE mailboxes SET total_messages = "
+             "(SELECT COUNT(*) FROM messages WHERE mailbox_id = %d), "
+             "unseen_messages = "
+             "(SELECT COUNT(*) FROM messages WHERE mailbox_id = %d AND "
+             "FIND_IN_SET('\\Seen', flags) = 0), "
+             "recent_messages = "
+             "(SELECT COUNT(*) FROM messages WHERE mailbox_id = %d AND "
+             "internal_date >= NOW() - INTERVAL 1 DAY), "
+             "updated_at = NOW() "
+             "WHERE id = %d",
+             mailbox_id, mailbox_id, mailbox_id, mailbox_id);
 
     bool success = db_execute_query(conn, query);
     db_release_connection(conn);

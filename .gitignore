@@ -23,7 +23,7 @@
 !/sql/*.sql
 
 # 5. Allow root-level important files
-!lightmail.conf.example
+!config.ini.example
 !Makefile.am
 !configure.ac
 !.gitignore
