@@ -1,6 +1,6 @@
 // src/protocol/imap/handler.rs
 use crate::runtime::Runtime;
-use crate::storage::models::{ account, mailbox };
+use crate::storage::models::{ account, mailbox, object, message };
 use crate::utils::generate_uidvalidity;
 
 use account::state::AuthError::{ InvalidCredentials, Database, Crypto };
@@ -387,8 +387,115 @@ impl ImapHandler {
         }
     }
 
-    // ignore unused, it will be implemented later
-    #[allow(unused)]
+    async fn resolve_sequence_set(
+        &self,
+        sequence_set: &super::command::state::SequenceSet,
+        mailbox_id: i64,
+        is_uid: bool,
+        pool: &sqlx::MySqlPool
+    ) -> Result<Vec<i64>> {
+        use super::command::state::{ SequenceRange };
+
+        let mut message_ids = Vec::new();
+        let total_messages = message::get_message_count(pool, mailbox_id).await?;
+
+        for range in &sequence_set.ranges {
+            match range {
+                SequenceRange::Single(n) => {
+                    if is_uid {
+                        // UID mode: n is a UID
+                        if *n > 0 {
+                            message_ids.push(*n as i64);
+                        }
+                    } else {
+                        // Sequence mode: n is a 1-based sequence number
+                        if *n > 0 && (*n as i64) <= total_messages {
+                            // Get the message at this sequence position
+                            let messages: Vec<message::Message> = message::get_messages_by_sequence_range(
+                                pool, mailbox_id, *n as i64, *n as i64
+                            ).await?;
+                            if let Some(msg) = messages.first() {
+                                message_ids.push(msg.id);
+                            }
+                        }
+                    }
+                }
+                SequenceRange::Range(start, end) => {
+                    if is_uid {
+                        // UID range
+                        let messages: Vec<message::Message> = message::get_messages_by_uid_range(
+                            pool, mailbox_id, *start as i64, *end as i64
+                        ).await?;
+                        message_ids.extend(messages.iter().map(|m| m.id));
+                    } else {
+                        // Sequence range
+                        let start_seq = *start as i64;
+                        let end_seq = *end as i64;
+                        if start_seq > 0 && end_seq >= start_seq && start_seq <= total_messages {
+                            let actual_end = end_seq.min(total_messages);
+                            let messages: Vec<message::Message> = message::get_messages_by_sequence_range(
+                                pool, mailbox_id, start_seq, actual_end
+                            ).await?;
+                            message_ids.extend(messages.iter().map(|m| m.id));
+                        }
+                    }
+                }
+                SequenceRange::From(start) => {
+                    if is_uid {
+                        // All UIDs >= start
+                        let messages: Vec<message::Message> = message::get_messages_by_uid_range(
+                            pool, mailbox_id, *start as i64, i64::MAX
+                        ).await?;
+                        message_ids.extend(messages.iter().map(|m| m.id));
+                    } else {
+                        // All sequences >= start
+                        let start_seq = *start as i64;
+                        if start_seq > 0 && start_seq <= total_messages {
+                            let messages: Vec<message::Message> = message::get_messages_by_sequence_range(
+                                pool, mailbox_id, start_seq, total_messages
+                            ).await?;
+                            message_ids.extend(messages.iter().map(|m| m.id));
+                        }
+                    }
+                }
+                SequenceRange::To(end) => {
+                    if is_uid {
+                        // All UIDs <= end (unusual but supported)
+                        let messages: Vec<message::Message> = message::get_messages_by_uid_range(
+                            pool, mailbox_id, 1, *end as i64
+                        ).await?;
+                        message_ids.extend(messages.iter().map(|m| m.id));
+                    } else {
+                        // All sequences <= end
+                        let end_seq = *end as i64;
+                        if end_seq > 0 {
+                            let actual_end = end_seq.min(total_messages);
+                            let messages: Vec<message::Message> = message::get_messages_by_sequence_range(
+                                pool, mailbox_id, 1, actual_end
+                            ).await?;
+                            message_ids.extend(messages.iter().map(|m| m.id));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Remove duplicates and sort
+        message_ids.sort();
+        message_ids.dedup();
+        Ok(message_ids)
+    }
+
+    async fn get_sequence_number(&self, pool: &sqlx::MySqlPool, mailbox_id: i64, message_id: i64) -> Result<i64> {
+        // Count messages with lower IDs in the same mailbox (1-based)
+        let query = "SELECT COUNT(*) as seq FROM messages WHERE mailbox_id = ? AND id <= ?";
+        let (seq,): (i64,) = sqlx::query_as(query)
+            .bind(mailbox_id)
+            .bind(message_id)
+            .fetch_one(pool).await?;
+        Ok(seq)
+    }
+
     async fn handle_fetch(
         &self,
         tag: &str,
@@ -412,9 +519,90 @@ impl ImapHandler {
         let db = self.runtime.db.get().ok_or_else(|| anyhow::anyhow!("No database connection"))?;
         let pool = db.pool();
 
-        // Get messages in sequence set
-        // TODO: Implement sequence set parsing and message retrieval
-        // For now, just send a basic response
+        // Resolve sequence set to message IDs
+        let message_ids = self.resolve_sequence_set(&sequence_set, selected.id, is_uid, pool).await?;
+
+        // For each message, fetch and send response
+        for message_id in message_ids {
+            if let Some(message) = message::get_message(pool, message_id).await? {
+                // Calculate sequence number (1-based position in mailbox)
+                let sequence_num = self.get_sequence_number(pool, selected.id, message.id).await?;
+
+                // Build fetch response
+                let mut response_parts = Vec::new();
+
+                for item in &items {
+                    match item {
+                        FetchItem::All => {
+                            // FLAGS INTERNALDATE RFC822.SIZE ENVELOPE
+                            response_parts.push(format!("FLAGS (\\Seen)"));
+                            response_parts.push(format!("INTERNALDATE \"{}\"", 
+                                message.created_at.format("%d-%b-%Y %H:%M:%S %z")));
+                            response_parts.push(format!("RFC822.SIZE {}", message.size));
+                            // TODO: Add ENVELOPE
+                        }
+                        FetchItem::Fast => {
+                            // FLAGS INTERNALDATE RFC822.SIZE
+                            response_parts.push(format!("FLAGS (\\Seen)"));
+                            response_parts.push(format!("INTERNALDATE \"{}\"", 
+                                message.created_at.format("%d-%b-%Y %H:%M:%S %z")));
+                            response_parts.push(format!("RFC822.SIZE {}", message.size));
+                        }
+                        FetchItem::Full => {
+                            // FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODY
+                            response_parts.push(format!("FLAGS (\\Seen)"));
+                            response_parts.push(format!("INTERNALDATE \"{}\"", 
+                                message.created_at.format("%d-%b-%Y %H:%M:%S %z")));
+                            response_parts.push(format!("RFC822.SIZE {}", message.size));
+                            // TODO: Add ENVELOPE and BODY
+                        }
+                        FetchItem::Flags => {
+                            response_parts.push("FLAGS (\\Seen)".to_string());
+                        }
+                        FetchItem::InternalDate => {
+                            response_parts.push(format!("INTERNALDATE \"{}\"", 
+                                message.created_at.format("%d-%b-%Y %H:%M:%S %z")));
+                        }
+                        FetchItem::Rfc822Size => {
+                            response_parts.push(format!("RFC822.SIZE {}", message.size));
+                        }
+                        FetchItem::Uid => {
+                            response_parts.push(format!("UID {}", message.uid));
+                        }
+                        FetchItem::Body => {
+                            // Get message content from S3
+                            if let Some(key) = object::get_key_by_id(pool, message.object_id).await? {
+                                if let Ok(content) = object::get_content(&self.runtime, &key).await {
+                                    response_parts.push(format!("BODY {{{}}}", content.len()));
+                                    response_parts.push(content);
+                                }
+                            }
+                        }
+                        FetchItem::Rfc822 => {
+                            // Same as BODY[]
+                            if let Some(key) = object::get_key_by_id(pool, message.object_id).await? {
+                                if let Ok(content) = object::get_content(&self.runtime, &key).await {
+                                    response_parts.push(format!("RFC822 {{{}}}", content.len()));
+                                    response_parts.push(content);
+                                }
+                            }
+                        }
+                        FetchItem::Envelope => {
+                            // TODO: Parse and format envelope
+                            response_parts.push("ENVELOPE (\"Mon, 1 Jan 2024 00:00:00 +0000\" \"Test\" ((\"Sender\" NIL \"sender\" \"example.com\")) ((\"Sender\" NIL \"sender\" \"example.com\")) ((\"Sender\" NIL \"sender\" \"example.com\")) NIL NIL NIL \"<test@example.com>\")".to_string());
+                        }
+                        _ => {
+                            // Other items not implemented yet
+                        }
+                    }
+                }
+
+                if !response_parts.is_empty() {
+                    let response = format!("* {} FETCH ({})", sequence_num, response_parts.join(" "));
+                    writer.write_all(format!("{}\r\n", response).as_bytes()).await?;
+                }
+            }
+        }
 
         let response = format!("{} OK FETCH completed\r\n", tag);
         writer.write_all(response.as_bytes()).await?;
@@ -423,8 +611,6 @@ impl ImapHandler {
         Ok(())
     }
 
-    // ignore unused, it will be implemented later
-    #[allow(unused)]
     async fn handle_search(
         &self,
         tag: &str,
@@ -448,12 +634,44 @@ impl ImapHandler {
             }
         }
 
-        // TODO: Implement search criteria parsing and database query
-        // For now, return empty result
+        let selected = session.selected_mailbox
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No mailbox selected"))?;
 
-        let prefix = if is_uid { "* SEARCH" } else { "* SEARCH" };
-        let response = format!("{} \r\n{} OK SEARCH completed\r\n", prefix, tag);
+        let db = self.runtime.db.get().ok_or_else(|| anyhow::anyhow!("No database connection"))?;
+        let pool = db.pool();
 
+        // For now, only handle ALL criteria - return all messages
+        let mut matching_ids = Vec::new();
+
+        match criteria {
+            SearchCriteria::All => {
+                // Get all messages in the mailbox
+                let messages: Vec<message::Message> = message::get_messages(
+                    pool, selected.id, 1000, 0
+                ).await?;
+                
+                if is_uid {
+                    matching_ids.extend(messages.iter().map(|m| m.uid));
+                } else {
+                    // Convert to sequence numbers
+                    for message in messages {
+                        let seq = self.get_sequence_number(pool, selected.id, message.id).await?;
+                        matching_ids.push(seq);
+                    }
+                }
+            }
+            _ => {
+                // TODO: Implement other search criteria
+                // For now, return empty result
+            }
+        }
+
+        // Sort and format response
+        matching_ids.sort();
+        let ids_str = matching_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(" ");
+        
+        let response = format!("* SEARCH {}\r\n{} OK SEARCH completed\r\n", ids_str, tag);
         writer.write_all(response.as_bytes()).await?;
         writer.flush().await?;
 

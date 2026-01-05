@@ -513,21 +513,24 @@ fn parse_charset(input: &str) -> IResult<&str, String> {
 
 fn parse_search_criteria(input: &str) -> IResult<&str, SearchCriteria> {
     // Simplified - implement full search criteria parser
-    map(
-        take_while1(|c: char| c.is_ascii() && !c.is_whitespace()),
-        |s: &str| {
-            match s.to_uppercase().as_str() {
-                "ALL" => SearchCriteria::All,
-                "UNSEEN" => SearchCriteria::Unseen,
-                "SEEN" => SearchCriteria::Seen,
-                "ANSWERED" => SearchCriteria::Answered,
-                "FLAGGED" => SearchCriteria::Flagged,
-                "DELETED" => SearchCriteria::Deleted,
-                "DRAFT" => SearchCriteria::Draft,
-                "RECENT" => SearchCriteria::Recent,
-                _ => SearchCriteria::All, // Default
+    preceded(
+        space0,
+        map(
+            take_while1(|c: char| c.is_ascii() && !c.is_whitespace()),
+            |s: &str| {
+                match s.to_uppercase().as_str() {
+                    "ALL" => SearchCriteria::All,
+                    "UNSEEN" => SearchCriteria::Unseen,
+                    "SEEN" => SearchCriteria::Seen,
+                    "ANSWERED" => SearchCriteria::Answered,
+                    "FLAGGED" => SearchCriteria::Flagged,
+                    "DELETED" => SearchCriteria::Deleted,
+                    "DRAFT" => SearchCriteria::Draft,
+                    "RECENT" => SearchCriteria::Recent,
+                    _ => SearchCriteria::All, // Default
+                }
             }
-        }
+        )
     ).parse(input)
 }
 

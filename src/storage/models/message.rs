@@ -83,3 +83,51 @@ pub async fn create_message(pool: &MySqlPool, message: &Message) -> anyhow::Resu
 
     Ok(message)
 }
+
+// ignore unused, it will be implemented later
+#[allow(unused)]
+pub async fn get_messages_by_uid_range(
+    pool: &MySqlPool,
+    mailbox_id: i64,
+    start_uid: i64,
+    end_uid: i64
+) -> anyhow::Result<Vec<Message>> {
+    let query =
+        "SELECT m.*, o.size, m.id as uid FROM messages m JOIN object_keys o ON m.object_id = o.id WHERE m.mailbox_id = ? AND m.id >= ? AND m.id <= ? ORDER BY m.id ASC";
+    let messages = sqlx
+        ::query_as(query)
+        .bind(mailbox_id)
+        .bind(start_uid)
+        .bind(end_uid)
+        .fetch_all(pool).await?;
+    Ok(messages)
+}
+
+// ignore unused, it will be implemented later
+#[allow(unused)]
+pub async fn get_messages_by_sequence_range(
+    pool: &MySqlPool,
+    mailbox_id: i64,
+    start_seq: i64,
+    end_seq: i64
+) -> anyhow::Result<Vec<Message>> {
+    let query =
+        "SELECT m.*, o.size, m.id as uid FROM messages m JOIN object_keys o ON m.object_id = o.id WHERE m.mailbox_id = ? ORDER BY m.created_at ASC LIMIT ? OFFSET ?";
+    let limit = end_seq - start_seq + 1;
+    let offset = start_seq - 1;
+    let messages = sqlx
+        ::query_as(query)
+        .bind(mailbox_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool).await?;
+    Ok(messages)
+}
+
+// ignore unused, it will be implemented later
+#[allow(unused)]
+pub async fn get_message_count(pool: &MySqlPool, mailbox_id: i64) -> anyhow::Result<i64> {
+    let query = "SELECT COUNT(*) as count FROM messages WHERE mailbox_id = ?";
+    let (count,): (i64,) = sqlx::query_as(query).bind(mailbox_id).fetch_one(pool).await?;
+    Ok(count)
+}
