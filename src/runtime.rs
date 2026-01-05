@@ -107,7 +107,7 @@ impl Runtime {
             let rt = Arc::clone(&self);
             tasks.push(
                 tokio::spawn(async move {
-                    protocol::imap::run_imap(rt).await;
+                    let _ = protocol::imap::run_imap(rt).await;
                 })
             );
         }

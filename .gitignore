@@ -24,6 +24,7 @@
 
 # 5. Allow root-level important files
 !config.ini.example
+!Cargo.toml
 !Makefile.am
 !configure.ac
 !.gitignore

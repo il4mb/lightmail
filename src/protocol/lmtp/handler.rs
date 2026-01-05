@@ -1,9 +1,12 @@
-use serde_json::{ json, Value };
+use serde_json::{ json };
 
 use tokio::io::{ AsyncBufReadExt, AsyncWriteExt, BufReader };
 use tracing::{ debug, error, info, warn, instrument };
-use uuid::{ NoContext, Timestamp, Uuid };
-use crate::{ runtime::Runtime, storage::models::{ account, message, mailbox, object } };
+use crate::{
+    runtime::Runtime,
+    storage::models::{ account, mailbox, message, object },
+    utils::uuid7,
+};
 use anyhow::{ Context, Result };
 use std::{ collections::HashMap, sync::Arc };
 use sqlx::{ MySqlPool, types::Json };
@@ -336,9 +339,7 @@ async fn deliver_message_to_recipients(
     let senders = get_sender_string(&parsed_message);
     let subject = parsed_message.subject();
     let header_json = headers_to_json(&parsed_message);
-
-    let ts = Timestamp::from_unix(NoContext, 1497624119, 1234);
-    let object_key = &Uuid::new_v7(ts).to_string();
+    let object_key = &uuid7();
 
     let rf = runtime.as_ref();
     let data = &transaction.data.clone();
@@ -496,6 +497,8 @@ enum LmtpProtocolState {
     DataReceived, // After DATA command (collecting message)
 }
 
+// ignore unused, it will be implemented later
+#[allow(unused)]
 /// LMTP command types
 #[derive(Debug)]
 enum LmtpCommand {
@@ -561,6 +564,8 @@ impl LmtpTransaction {
     }
 }
 
+// ignore unused, it will be implemented later
+#[allow(unused)]
 /// Recipient information
 #[derive(Debug)]
 struct RecipientInfo {
@@ -569,6 +574,8 @@ struct RecipientInfo {
     mailbox_id: i64,
 }
 
+// ignore unused, it will be implemented later
+#[allow(unused)]
 /// Delivery result for each recipient
 #[derive(Debug)]
 enum DeliveryResult {

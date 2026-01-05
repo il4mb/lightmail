@@ -15,6 +15,8 @@ pub struct Message {
     pub updated_at: DateTime<Utc>,
 }
 
+// ignore unused, it will be implemented later
+#[allow(unused)]
 pub async fn get_messages(
     pool: &MySqlPool,
     mailbox_id: i64,
@@ -32,6 +34,8 @@ pub async fn get_messages(
     Ok(messages)
 }
 
+// ignore unused, it will be implemented later
+#[allow(unused)]
 pub async fn get_message(pool: &MySqlPool, id: i64) -> anyhow::Result<Option<Message>> {
     let query = "SELECT * FROM messages WHERE id = ?";
     let message = sqlx::query_as::<_, Message>(query).bind(id).fetch_optional(pool).await?;

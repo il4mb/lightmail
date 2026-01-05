@@ -1,6 +1,6 @@
 pub mod handler;
 
-use tokio::{ net::UnixListener, runtime };
+use tokio::{ net::UnixListener };
 use std::{ path::Path, sync::Arc };
 use tracing::info;
 
@@ -10,7 +10,7 @@ pub async fn run_lmtp(runtime: Arc<Runtime>) {
     info!("Starting LMTP server");
 
     let config = &runtime.config;
-    let db = runtime.db.get().unwrap();
+    // let db = runtime.db.get().unwrap();
 
     let path = Path::new(config.get_value("lmtp", "socket").unwrap_or("/tmp/lmtp.sock"));
 
@@ -31,7 +31,7 @@ pub async fn run_lmtp(runtime: Arc<Runtime>) {
         let (socket, _) = client.unwrap();
 
         tokio::spawn(async move {
-            handler::handle_client(socket, runtime).await;
+            let _ = handler::handle_client(socket, runtime).await;
         });
     }
 }

@@ -2,12 +2,16 @@ use sqlx::FromRow;
 
 use crate::runtime::{ Runtime };
 
+// ignore unused, it will be implemented later
+#[allow(unused)]
 #[derive(Debug, FromRow)]
 pub struct S3Object {
     pub id: i64,
     pub size: i64,
 }
 
+// ignore unused, it will be implemented later
+#[allow(unused)]
 pub async fn delete_record(runtime: &Runtime, id: i64) -> anyhow::Result<()> {
     let db = runtime.db.get().ok_or_else(|| anyhow::anyhow!("DB not initialized"))?;
     sqlx::query("DELETE FROM object_keys WHERE id = ?").bind(id).execute(db.pool()).await?;
@@ -16,7 +20,6 @@ pub async fn delete_record(runtime: &Runtime, id: i64) -> anyhow::Result<()> {
 
 pub async fn add_object(runtime: &Runtime, key: &str, content: &str) -> anyhow::Result<S3Object> {
     let s3 = runtime.s3.get().ok_or_else(|| anyhow::anyhow!("S3 not initialized"))?;
-
     let db = runtime.db.get().ok_or_else(|| anyhow::anyhow!("DB not initialized"))?;
 
     let pool = db.pool();
@@ -38,6 +41,8 @@ pub async fn add_object(runtime: &Runtime, key: &str, content: &str) -> anyhow::
     Ok(S3Object { id, size })
 }
 
+// ignore unused, it will be implemented later
+#[allow(unused)]
 pub async fn get_content(runtime: &Runtime, key: &str) -> anyhow::Result<String> {
     let s3 = runtime.s3.get().ok_or_else(|| anyhow::anyhow!("S3 not initialized"))?;
     let content = s3.get_content(key).await.map_err(|e| anyhow::anyhow!("S3 get failed: {}", e))?;

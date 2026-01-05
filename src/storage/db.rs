@@ -48,6 +48,8 @@ impl DatabaseConfig {
     }
 }
 
+// ignore unused, it will be implemented later
+#[allow(unused)]
 #[derive(Debug, Clone)]
 pub struct Database {
     config: DatabaseConfig,
@@ -76,11 +78,15 @@ impl Database {
         &self.pool
     }
 
+    // ignore unused, it will be implemented later
+    #[allow(unused)]
     pub async fn ping(&self) -> Result<()> {
         sqlx::query("SELECT 1").execute(&self.pool).await.context("Database ping failed")?;
         Ok(())
     }
 
+    // ignore unused, it will be implemented later
+    #[allow(unused)]
     pub async fn close(&self) {
         self.pool.close().await;
         debug!("Database connection pool closed");
