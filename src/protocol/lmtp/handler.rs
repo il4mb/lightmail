@@ -253,6 +253,12 @@ pub async fn handle_client(
                             ).await?;
                             all_success = false;
                         }
+                        DeliveryResult::VirusDetected(reason) => {
+                            write_half.write_all(
+                                format!("550 5.7.1 Message rejected for {} ({})\r\n", recipient, reason).as_bytes()
+                            ).await?;
+                            all_success = false;
+                        }
                     }
                 }
 
@@ -390,7 +396,7 @@ async fn deliver_message_to_recipients(
                         "reject" => {
                             warn!("Virus detected: {}", virus_response);
                             for recipient in &transaction.recipients {
-                                results.push((recipient.email.clone(), DeliveryResult::StorageError(format!("Virus detected: {}", virus_response))));
+                                results.push((recipient.email.clone(), DeliveryResult::VirusDetected(virus_response.clone())));
                             }
                             return results;
                         }
@@ -403,7 +409,7 @@ async fn deliver_message_to_recipients(
                         _ => {
                             warn!("Unknown antivirus mode '{}' , rejecting", antivirus_mode);
                             for recipient in &transaction.recipients {
-                                results.push((recipient.email.clone(), DeliveryResult::StorageError("Antivirus policy unknown".to_string())));
+                                results.push((recipient.email.clone(), DeliveryResult::VirusDetected("Antivirus policy unknown".to_string())));
                             }
                             return results;
                         }
@@ -749,6 +755,7 @@ enum DeliveryResult {
     DatabaseError(String),
     StorageError(String),
     ParseError,
+    VirusDetected(String),
 }
 
 #[cfg(test)]
