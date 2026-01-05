@@ -121,6 +121,24 @@ impl Runtime {
             );
         }
 
+        if self.config.is_section_exists("pop3") {
+            let rt = Arc::clone(&self);
+            tasks.push(
+                tokio::spawn(async move {
+                    let _ = protocol::pop3::run_pop3(rt).await;
+                })
+            );
+        }
+
+        if self.config.is_section_exists("api") {
+            let rt = Arc::clone(&self);
+            tasks.push(
+                tokio::spawn(async move {
+                    let _ = crate::api::run_api(rt).await;
+                })
+            );
+        }
+
         Ok(())
     }
 }

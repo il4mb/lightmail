@@ -34,3 +34,14 @@ bucket = mails
 access_key = 
 secret_key = 
 use_ssl = 1
+
+[api]
+bind = 0.0.0.0
+port = 8080
+token = secret
+
+[antivirus]
+enabled = false
+host = localhost
+port = 3310
+mode = quarantine  # options: reject|quarantine|tag

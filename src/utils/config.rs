@@ -126,9 +126,54 @@ impl Config {
     //     self.sections.contains_key(section)
     // }
 
-    // pub fn get_section(&self, section: &str) -> Option<&ConfigSection> {
-    //     self.sections.get(section)
-    // }
+    pub fn get_int(&self, section: &str, key: &str, default: i32) -> i32 {
+        match self.get_value(section, key) {
+            Some(val) =>
+                match val.parse::<i32>() {
+                    Ok(num) => num,
+                    Err(_) => {
+                        warn!(
+                            "Invalid integer value '{}' for {}.{}, using default {}",
+                            val,
+                            section,
+                            key,
+                            default
+                        );
+                        default
+                    }
+                }
+            None => {
+                debug!("Using default value {} for {}.{}", default, section, key);
+                default
+            }
+        }
+    }
+
+    pub fn get_bool(&self, section: &str, key: &str, default: bool) -> bool {
+        match self.get_value(section, key) {
+            Some(val) => {
+                let lower_val = val.to_lowercase();
+                match lower_val.as_str() {
+                    "1" | "true" | "yes" | "on" | "enabled" => true,
+                    "0" | "false" | "no" | "off" | "disabled" => false,
+                    _ => {
+                        warn!(
+                            "Invalid boolean value '{}' for {}.{}, using default {}",
+                            val,
+                            section,
+                            key,
+                            default
+                        );
+                        default
+                    }
+                }
+            }
+            None => {
+                debug!("Using default value {} for {}.{}", default, section, key);
+                default
+            }
+        }
+    }
 
     pub fn is_section_exists(&self, section: &str) -> bool {
         self.sections.contains_key(section)
@@ -255,5 +300,18 @@ impl ConfigLoader {
 
     pub fn get_config(&self) -> &Config {
         &self.config
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_bool_defaults() {
+        let mut cfg = Config::new();
+        assert_eq!(cfg.get_bool("antivirus", "enabled", false), false);
+        cfg.set_value("antivirus", "enabled", "true").unwrap();
+        assert_eq!(cfg.get_bool("antivirus", "enabled", false), true);
     }
 }

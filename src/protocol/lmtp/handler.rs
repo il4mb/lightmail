@@ -1,6 +1,9 @@
 use serde_json::{ json };
+use clamav_client::{ clean };
+use clamav_client::tokio::{ scan_stream, Tcp as ClamTcp };
 
 use tokio::io::{ AsyncBufReadExt, AsyncWriteExt, BufReader };
+use tokio_util::io::ReaderStream;
 use tracing::{ debug, error, info, warn, instrument };
 use crate::{
     runtime::Runtime,
@@ -8,7 +11,7 @@ use crate::{
     utils::uuid7,
 };
 use anyhow::{ Context, Result };
-use std::{ collections::HashMap, sync::Arc };
+use std::{ collections::HashMap, path::Path, sync::Arc };
 use sqlx::{ MySqlPool, types::Json };
 use chrono::{ Utc };
 use mail_parser::{ Addr, Message, MessageParser };
@@ -164,17 +167,17 @@ pub async fn handle_client(
                 write_half.write_all(b"354 Start mail input; end with <CRLF>.<CRLF>\r\n").await?;
             }
 
-            // During DATA phase, collect message content
+            // During DATA phase, collect message content (appending to temp file)
             (LmtpProtocolState::DataReceived, LmtpCommand::DataContent(content)) => {
                 // Handle dot-stuffing: ".." at start means literal "."
                 let processed = if content.starts_with("..") { &content[1..] } else { content };
 
-                if let Err(_) = transaction.append_data(processed) {
+                if let Err(_) = transaction.append_data(processed).await {
                     // Message too large
                     write_half.write_all(
                         b"552 5.3.4 Message size exceeds fixed maximum\r\n"
                     ).await?;
-                    transaction.reset();
+                    transaction.reset().await;
                     protocol_state = LmtpProtocolState::LhloReceived;
                 }
             }
@@ -184,10 +187,37 @@ pub async fn handle_client(
                 // === PHASE 4: MESSAGE DELIVERY ===
                 // LMTP requires immediate delivery attempt
 
+                // Resolve temp file path used for streaming scan and storage
+                let data_path = if let Some(path) = &transaction.data_file {
+                    path.clone()
+                } else {
+                    // No data collected
+                    write_half.write_all(b"500 5.5.2 No message data\r\n").await?;
+                    transaction.reset().await;
+                    protocol_state = LmtpProtocolState::LhloReceived;
+                    continue;
+                };
+
+                // Read message bytes from temp file
+                let data_bytes = match tokio::fs::read(&data_path).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        error!("Failed to read message temp file: {}", e);
+                        for r in &transaction.recipients {
+                            write_half.write_all(format!("451 4.3.0 Temporary failure for {}\r\n", r.email).as_bytes()).await?;
+                        }
+                        transaction.reset().await;
+                        protocol_state = LmtpProtocolState::LhloReceived;
+                        continue;
+                    }
+                };
+
                 let delivery_results = deliver_message_to_recipients(
                     pool,
                     &transaction,
-                    &runtime
+                    &runtime,
+                    &data_bytes,
+                    &data_path
                 ).await;
 
                 // Send per-recipient responses (RFC 2033 Section 4.4)
@@ -231,18 +261,19 @@ pub async fn handle_client(
                         "Message delivered: {} -> {} recipients ({} bytes)",
                         transaction.sender,
                         transaction.recipients.len(),
-                        transaction.data.len()
+                        transaction.size
                     );
                 }
 
                 // Reset for next transaction
-                transaction.reset();
+                transaction.reset().await;
                 protocol_state = LmtpProtocolState::LhloReceived;
+
             }
 
             // Protocol reset
             (_, LmtpCommand::Rset) => {
-                transaction.reset();
+                transaction.reset().await;
                 protocol_state = LmtpProtocolState::LhloReceived;
                 write_half.write_all(b"250 2.0.0 Reset OK\r\n").await?;
             }
@@ -275,6 +306,7 @@ pub async fn handle_client(
                 }
             }
         }
+
     }
 
     info!("LMTP session completed");
@@ -319,12 +351,84 @@ async fn validate_recipient(pool: &MySqlPool, recipient_email: &str) -> Result<O
 async fn deliver_message_to_recipients(
     pool: &MySqlPool,
     transaction: &LmtpTransaction,
-    runtime: &Arc<Runtime>
+    runtime: &Arc<Runtime>,
+    data_bytes: &[u8],
+    data_path: &Path
 ) -> Vec<(String, DeliveryResult)> {
     let mut results = Vec::new();
 
+    // Antivirus Scan (supports modes: reject, quarantine, tag)
+    let mut virus_detected = false;
+    let mut virus_response = String::new();
+    let antivirus_mode = runtime.config.get_value("antivirus", "mode").unwrap_or("reject").to_lowercase();
+    let clamav_enabled = runtime.config.get_value("antivirus", "enabled").unwrap_or("false") == "true";
+    if clamav_enabled {
+        let clamav_host = runtime.config.get_value("antivirus", "host").unwrap_or("localhost").to_string();
+        let clamav_port = runtime.config.get_value("antivirus", "port").unwrap_or("3310").parse().unwrap_or(3310);
+        let clamd_addr = format!("{}:{}", clamav_host, clamav_port);
+
+        let scan_file = match tokio::fs::File::open(data_path).await {
+            Ok(f) => f,
+            Err(e) => {
+                error!("Unable to open message for antivirus scan: {}", e);
+                for recipient in &transaction.recipients {
+                    results.push((recipient.email.clone(), DeliveryResult::StorageError("Antivirus scan failed".to_string())));
+                }
+                return results;
+            }
+        };
+
+        let stream = ReaderStream::new(scan_file);
+        match scan_stream(stream, ClamTcp { host_address: clamd_addr }, None).await {
+            Ok(response) => match clean(&response) {
+                Ok(true) => info!("Message scanned clean"),
+                Ok(false) => {
+                    virus_detected = true;
+                    virus_response = String::from_utf8_lossy(&response).to_string();
+
+                    match antivirus_mode.as_str() {
+                        "reject" => {
+                            warn!("Virus detected: {}", virus_response);
+                            for recipient in &transaction.recipients {
+                                results.push((recipient.email.clone(), DeliveryResult::StorageError(format!("Virus detected: {}", virus_response))));
+                            }
+                            return results;
+                        }
+                        "quarantine" => {
+                            info!("Virus detected, message will be quarantined: {}", virus_response);
+                        }
+                        "tag" => {
+                            info!("Virus detected, message will be tagged: {}", virus_response);
+                        }
+                        _ => {
+                            warn!("Unknown antivirus mode '{}' , rejecting", antivirus_mode);
+                            for recipient in &transaction.recipients {
+                                results.push((recipient.email.clone(), DeliveryResult::StorageError("Antivirus policy unknown".to_string())));
+                            }
+                            return results;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to interpret ClamAV response: {}", e);
+                    for recipient in &transaction.recipients {
+                        results.push((recipient.email.clone(), DeliveryResult::StorageError("Antivirus scan failed".to_string())));
+                    }
+                    return results;
+                }
+            },
+            Err(e) => {
+                error!("ClamAV scan failed: {}", e);
+                for recipient in &transaction.recipients {
+                    results.push((recipient.email.clone(), DeliveryResult::StorageError("Antivirus scan failed".to_string())));
+                }
+                return results;
+            }
+        }
+    }
+
     let parser = MessageParser::default();
-    let parsed_message = match parser.parse(transaction.data.as_bytes()) {
+    let parsed_message = match parser.parse(data_bytes) {
         Some(msg) => msg,
         None => {
             error!("Failed to parse email message");
@@ -337,13 +441,21 @@ async fn deliver_message_to_recipients(
     };
 
     let senders = get_sender_string(&parsed_message);
-    let subject = parsed_message.subject();
+    let subject = parsed_message.subject().map(|s| s.to_string()).unwrap_or_default();
     let header_json = headers_to_json(&parsed_message);
-    let object_key = &uuid7();
+
+    let base_key = uuid7();
+    let (subject, header_json, object_key) = apply_antivirus_policy(
+        subject,
+        header_json,
+        base_key,
+        virus_detected,
+        &antivirus_mode,
+        &virus_response,
+    );
 
     let rf = runtime.as_ref();
-    let data = &transaction.data.clone();
-    let object = match object::add_object(rf, &object_key, data).await {
+    let object = match object::add_object_bytes(rf, &object_key, data_bytes).await {
         Ok(obj) => obj,
         Err(e) => {
             error!("Failed to store message object: {}", e);
@@ -382,10 +494,12 @@ async fn deliver_message_to_recipients(
             mailbox_id: recipient.mailbox_id,
             object_id: object.id, //
             sender: senders.clone(),
-            subject: subject.unwrap_or("").to_string(),
+            subject: subject.clone(),
             header: Json(header),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            size: data_bytes.len() as i64,
+            uid: 0, // Will be set by DB trigger or auto-increment if mapped to id
         };
         match message::create_message(pool, &message).await {
             Ok(_) => {
@@ -431,6 +545,37 @@ fn get_sender_string(msg: &Message) -> String {
     msg.from()
         .map(|from| { from.iter().map(addr_to_string).collect::<Vec<_>>().join(", ") })
         .unwrap_or_default()
+}
+
+fn apply_antivirus_policy(
+    mut subject: String,
+    mut header_json: serde_json::Value,
+    base_key: String,
+    virus_detected: bool,
+    antivirus_mode: &str,
+    virus_response: &str,
+) -> (String, serde_json::Value, String) {
+    let object_key = if virus_detected && antivirus_mode == "quarantine" {
+        format!("quarantine/{}.eml", base_key)
+    } else {
+        base_key
+    };
+
+    if virus_detected {
+        match antivirus_mode {
+            "quarantine" => {
+                subject = format!("[QUARANTINE] {}", subject);
+                header_json["quarantine_reason"] = json!([virus_response.to_string()]);
+            }
+            "tag" => {
+                subject = format!("[VIRUS] {}", subject);
+                header_json["X-Virus-Status"] = json!([virus_response.to_string()]);
+            }
+            _ => {}
+        }
+    }
+
+    (subject, header_json, object_key)
 }
 
 /// Parse LMTP command line
@@ -515,12 +660,13 @@ enum LmtpCommand {
     Quit, // QUIT
 }
 
-/// Transaction state for current message
+/// Transaction state for current message (streamed to temp file)
 #[derive(Debug)]
 struct LmtpTransaction {
     sender: String,
     recipients: Vec<RecipientInfo>,
-    data: String,
+    data_file: Option<std::path::PathBuf>,
+    size: usize,
     max_message_size: usize,
 }
 
@@ -529,7 +675,8 @@ impl LmtpTransaction {
         Self {
             sender: String::new(),
             recipients: Vec::new(),
-            data: String::new(),
+            data_file: None,
+            size: 0,
             max_message_size,
         }
     }
@@ -537,7 +684,8 @@ impl LmtpTransaction {
     fn start(&mut self, sender: String) {
         self.sender = sender;
         self.recipients.clear();
-        self.data.clear();
+        self.size = 0;
+        self.data_file = None;
     }
 
     fn add_recipient(&mut self, email: String, account_id: i64, mailbox_id: i64) {
@@ -548,18 +696,35 @@ impl LmtpTransaction {
         });
     }
 
-    fn append_data(&mut self, content: &str) -> Result<()> {
+    async fn append_data(&mut self, content: &str) -> Result<()> {
+        // Lazy-create temp file
+        if self.data_file.is_none() {
+            let fname = format!("/tmp/lightmail-{}.eml", crate::utils::uuid7());
+            self.data_file = Some(std::path::PathBuf::from(fname));
+        }
+
         // Check size limit
-        if self.data.len() + content.len() > self.max_message_size {
+        if self.size + content.len() > self.max_message_size {
             return Err(anyhow::anyhow!("Message size limit exceeded"));
         }
 
-        self.data.push_str(content);
-        self.data.push_str("\r\n");
+        let path = self.data_file.as_ref().unwrap();
+        let mut file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .await?;
+
+        file.write_all(content.as_bytes()).await?;
+        file.write_all(b"\r\n").await?;
+        self.size += content.len();
         Ok(())
     }
 
-    fn reset(&mut self) {
+    async fn reset(&mut self) {
+        if let Some(path) = &self.data_file {
+            let _ = tokio::fs::remove_file(path).await;
+        }
         self.start(String::new());
     }
 }
@@ -584,4 +749,96 @@ enum DeliveryResult {
     DatabaseError(String),
     StorageError(String),
     ParseError,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+
+    #[tokio::test]
+    async fn test_lmtp_transaction_append_and_reset() -> Result<()> {
+        let mut t = LmtpTransaction::new(1024);
+        assert!(t.data_file.is_none());
+        t.add_recipient("user@example.com".to_string(), 1, 1);
+
+        t.append_data("Hello").await?;
+        assert!(t.data_file.is_some());
+        let path = t.data_file.clone().unwrap();
+        let metadata = tokio::fs::metadata(&path).await?;
+        assert!(metadata.len() > 0);
+        let size_before = t.size;
+        assert!(size_before >= 5);
+
+        t.append_data("World").await?;
+        assert!(t.size >= size_before + 5);
+
+        t.reset().await;
+        assert!(t.data_file.is_none());
+        assert_eq!(t.size, 0);
+
+        // file should be removed
+        assert!(tokio::fs::metadata(&path).await.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_apply_antivirus_policy_quarantine() {
+        let subject = "Hello".to_string();
+        let headers = json!({"X-Test": ["v"]});
+        let base_key = "key123".to_string();
+
+        let (new_subj, new_headers, key) = apply_antivirus_policy(
+            subject,
+            headers,
+            base_key,
+            true,
+            "quarantine",
+            "EICAR"
+        );
+
+        assert_eq!(new_subj, "[QUARANTINE] Hello");
+        assert_eq!(key, "quarantine/key123.eml");
+        assert_eq!(new_headers["quarantine_reason"][0], "EICAR");
+    }
+
+    #[test]
+    fn test_apply_antivirus_policy_tag() {
+        let subject = "Hello".to_string();
+        let headers = json!({});
+        let base_key = "key123".to_string();
+
+        let (new_subj, new_headers, key) = apply_antivirus_policy(
+            subject,
+            headers,
+            base_key,
+            true,
+            "tag",
+            "EICAR"
+        );
+
+        assert_eq!(new_subj, "[VIRUS] Hello");
+        assert_eq!(key, "key123");
+        assert_eq!(new_headers["X-Virus-Status"][0], "EICAR");
+    }
+
+    #[test]
+    fn test_apply_antivirus_policy_clean() {
+        let subject = "Hello".to_string();
+        let headers = json!({});
+        let base_key = "key123".to_string();
+
+        let (new_subj, new_headers, key) = apply_antivirus_policy(
+            subject.clone(),
+            headers.clone(),
+            base_key.clone(),
+            false,
+            "quarantine",
+            ""
+        );
+
+        assert_eq!(new_subj, subject);
+        assert_eq!(key, base_key);
+        assert_eq!(new_headers, headers);
+    }
 }

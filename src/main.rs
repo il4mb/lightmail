@@ -2,6 +2,7 @@ mod runtime;
 mod utils;
 mod protocol;
 mod storage;
+mod api;
 
 use std::{ env, sync::Arc };
 use anyhow::Result;

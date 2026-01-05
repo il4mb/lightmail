@@ -81,6 +81,7 @@ pub enum ImapCommand {
 
     // Extensions (optional)
     Idle,
+    #[allow(dead_code)]
     IdDone,
     Enable {
         features: Vec<String>,

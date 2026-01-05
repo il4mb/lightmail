@@ -13,6 +13,10 @@ pub struct Message {
     pub header: Json<Value>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[sqlx(default)]
+    pub size: i64,
+    #[sqlx(default)]
+    pub uid: i64,
 }
 
 // ignore unused, it will be implemented later
@@ -24,7 +28,7 @@ pub async fn get_messages(
     offset: i64
 ) -> anyhow::Result<Vec<Message>> {
     let query =
-        "SELECT * FROM messages WHERE mailbox_id = ? LIMIT ? OFFSET ? ORDER BY created_at DESC";
+        "SELECT m.*, o.size, m.id as uid FROM messages m JOIN object_keys o ON m.object_id = o.id WHERE m.mailbox_id = ? LIMIT ? OFFSET ? ORDER BY m.created_at DESC";
     let messages = sqlx
         ::query_as(query)
         .bind(mailbox_id)
@@ -37,7 +41,7 @@ pub async fn get_messages(
 // ignore unused, it will be implemented later
 #[allow(unused)]
 pub async fn get_message(pool: &MySqlPool, id: i64) -> anyhow::Result<Option<Message>> {
-    let query = "SELECT * FROM messages WHERE id = ?";
+    let query = "SELECT m.*, o.size, m.id as uid FROM messages m JOIN object_keys o ON m.object_id = o.id WHERE m.id = ?";
     let message = sqlx::query_as::<_, Message>(query).bind(id).fetch_optional(pool).await?;
     // let message = match message {
     //     Some(mut msg) => {
@@ -73,7 +77,7 @@ pub async fn create_message(pool: &MySqlPool, message: &Message) -> anyhow::Resu
 
     // Fetch the full row
     let message = sqlx
-        ::query_as::<_, Message>("SELECT * FROM messages WHERE id = ?")
+        ::query_as::<_, Message>("SELECT m.*, o.size, m.id as uid FROM messages m JOIN object_keys o ON m.object_id = o.id WHERE m.id = ?")
         .bind(id)
         .fetch_one(pool).await?;
 
