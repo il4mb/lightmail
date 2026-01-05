@@ -1,74 +1,125 @@
-# LightMail 📧
+# LightMail
 
-**A modern, high-performance, production-ready mail server written in Rust.**
+LightMail is a modern, async mail server implemented in Rust. It provides IMAP, LMTP, POP3, and an Admin HTTP API built for production reliability, modularity, and performance.
 
-LightMail is a complete rewrite of a legacy C mail server, designed for security, concurrency, and scalability. It leverages the safety of Rust and the power of the Tokio async runtime.
+## Highlights
+- Native Rust and Tokio-based async runtime
+- Memory-safe, high-performance protocol handlers (IMAP, POP3, LMTP)
+- S3-only object storage for message bodies and calendar objects
+- MySQL metadata for accounts, mailboxes, messages, flags, UIDVALIDITY
+- Soft-delete with a background Garbage Worker (non-blocking deletions)
+- TLS via rustls and secure password hashing (bcrypt)
+- Structured logging and metrics-ready
 
-## 🚀 Features
+## IMAP Features
+- Core: LOGIN, CAPABILITY, NOOP, LOGOUT
+- Mailbox: LIST, LSUB, SELECT, EXAMINE, STATUS, CLOSE, CHECK
+- Messages: FETCH, STORE, COPY, MOVE, EXPUNGE (soft-delete)
+- UID: UID FETCH, UID SEARCH, UID EXPUNGE
+- Extensions: IDLE, UIDPLUS (`APPENDUID`), LITERAL+ advertised
+- APPEND: Streams literal to S3 with optional antivirus scanning
 
-- **Protocols**:
-  - **IMAP4rev1** (RFC 3501) with extensions (IDLE, UIDPLUS, SPECIAL-USE).
-  - **POP3** (RFC 1939) for lightweight retrieval.
-  - **LMTP** (RFC 2033) for local delivery from MTAs like Postfix.
-  - **HTTP API** for administration.
+## Architecture Overview
+- Runtime supervises protocol servers and background workers.
+- Protocols live under `src/protocol/*` with session-based state machines:
+  - `protocol::imap`: RFC 3501 + extensions (IDLE, UIDPLUS, MOVE, LITERAL+)
+  - `protocol::pop3`: Minimal POP3 (USER/PASS, STAT, LIST, RETR, DELE, QUIT)
+  - `protocol::lmtp`: Streaming delivery to S3 with atomic commit
+- Storage:
+  - S3 for bodies and attachments (`object_keys` table tracks S3 keys and sizes)
+  - MySQL for metadata only (accounts, mailboxes, messages, flags, UIDVALIDITY)
 
-- **Storage**:
-  - **Hybrid Architecture**:
-    - **S3 Object Storage**: Stores all email bodies and attachments (scalable, cheap).
-    - **MySQL**: Stores metadata, indexes, and user information (fast, relational).
-  - **Zero-Copy Streaming**: Emails are streamed directly to S3 during delivery.
+See [ARCHITECTURE.md](ARCHITECTURE.md), [RFC_COMPLIANCE.md](RFC_COMPLIANCE.md), and [STORAGE.md](STORAGE.md) for details.
 
-- **Security**:
-  - **Modern Auth**: Bcrypt/Argon2 password hashing.
-  - **TLS**: Native support via `rustls`.
-  - **Antivirus**: Integrated ClamAV scanning during delivery.
+## Configuration
+The default config is in [config/lightmail.conf](config/lightmail.conf) and symlinked at `/var/lightmail/config.ini`.
 
-- **Observability**:
-  - Structured logging with `tracing`.
-  - Prometheus-ready metrics.
+Key sections:
+- `[database]`: MySQL connection (host/port or socket), user, password, database
+- `[s3]`: endpoint, bucket, region, access/secret keys
+- `[imap]`, `[pop3]`, `[lmtp]`, `[api]`: enable/disable modules and ports
 
-## 📚 Documentation
+## Running
 
-- [Architecture Overview](ARCHITECTURE.md)
-- [RFC Compliance](RFC_COMPLIANCE.md)
-- [Storage Design](STORAGE.md)
-
-## 🛠️ Installation & Usage
-
-### Prerequisites
-- Rust (latest stable)
-- MySQL 8.0+
-- S3-compatible storage (AWS S3, MinIO, etc.)
-- ClamAV (optional, for antivirus)
-
-### Configuration
-Copy the example config:
+### Development
 ```bash
-cp config.ini.example /etc/lightmail/config.ini
-```
-Edit `/etc/lightmail/config.ini` with your database and S3 credentials.
-
-### Running
-```bash
-# Build release
-cargo build --release
-
-# Run
-./target/release/lightmail --config /etc/lightmail/config.ini
+cargo run
 ```
 
-## 🏗️ Development
+By default, servers start for the enabled sections in `config.ini`. Ensure MySQL and S3 are reachable and configured.
 
-### Project Structure
-- `src/protocol/`: IMAP, POP3, LMTP implementations.
-- `src/storage/`: Database and S3 abstractions.
-- `src/api/`: HTTP REST API.
-- `src/runtime.rs`: Service lifecycle management.
-
-### Testing
+### Testing IMAP
+Use the enhanced test script:
 ```bash
-cargo test
+bash test_imap.sh --server 127.0.0.1 --port 1143 --no-ssl -v
 ```
 
-## 📄 License
-MIT
+Seeded account: `user@example.com` with a valid password (bcrypt hash in schema).
+
+### Antivirus (ClamAV)
+- Enabled via `[antivirus]` section in config; communicates with `clamd` using the INSTREAM protocol.
+- Modes:
+  - `reject`: Rejects infected APPEND with `NO`.
+  - `quarantine`: Delivers infected messages to the `Quarantine` mailbox (auto-created if missing).
+  - `tag`: Marks infected messages with `$Virus` flag in the destination mailbox.
+- Keys: `enabled`, `host`, `port`, `mode`.
+
+## Storage Model
+- Bodies in S3 only. No body content in MySQL.
+- MySQL tables: `accounts`, `mailboxes`, `messages`, `object_keys`, etc.
+- Object keys format:
+  - `emails/<uuidv7>.eml`
+  - `calendars/<uuidv7>.ics`
+
+## Garbage Collection (Soft Delete)
+Deletions are soft-marked with `deleted_at` and processed asynchronously:
+
+1. Frontline operations (IMAP EXPUNGE, POP3 DELE, API delete) set `deleted_at = NOW()`.
+2. Background Garbage Worker:
+   - Scans soft-deleted records
+   - Deletes S3 objects
+   - Hard-deletes metadata
+   - Logs successes, retries failures
+
+Details: [GARBAGE_COLLECTOR.md](GARBAGE_COLLECTOR.md).
+
+### Garbage Worker Configuration
+
+Tune the garbage worker via config settings:
+
+```
+[garbage]
+batch_size = 100      # Number of messages per batch
+idle_seconds = 60     # Sleep when no work is found
+pause_seconds = 5     # Pause between batches
+```
+
+Adjust these values to match your storage throughput and operational needs.
+### Garbage Worker Configuration
+
+Tune the garbage worker via config settings:
+
+```
+[garbage]
+batch_size = 100      # Number of messages per batch
+idle_seconds = 60     # Sleep when no work is found
+pause_seconds = 5     # Pause between batches
+```
+
+Adjust these values to match your storage throughput and operational needs.
+
+## Security
+- Password hashing: bcrypt (Argon2 optional)
+- TLS via rustls
+- Input validation for IMAP literals and POP3 lines
+- Optional rate limiting and anti-bruteforce (roadmap)
+
+## Roadmap
+- Full APPEND with antivirus scanning
+- Expanded SEARCH criteria and ENVELOPE/BODYSTRUCTURE
+- STARTTLS upgrade flow
+- CalDAV readiness for calendar objects
+- Observability metrics endpoints
+
+## Contributing
+See [CONTRIBUTING.md](CONTRIBUTING.md). PRs welcome.

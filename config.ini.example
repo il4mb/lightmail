@@ -45,3 +45,11 @@ enabled = false
 host = localhost
 port = 3310
 mode = quarantine  # options: reject|quarantine|tag
+
+[garbage]
+# Number of soft-deleted messages processed per batch
+batch_size = 100
+# Sleep when no work is found (seconds)
+idle_seconds = 60
+# Pause between batches (seconds)
+pause_seconds = 5

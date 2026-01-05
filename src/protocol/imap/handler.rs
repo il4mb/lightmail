@@ -88,9 +88,9 @@ impl ImapHandler {
                             ).await?;
                             continue;
                         }
-                        // Store command for processing after literal
+                        // Store original command line for processing after literal
                         session.pending_commands.push(tag.clone());
-                        session.pending_commands.push(format!("{:?}", command));
+                        session.pending_commands.push(trimmed.to_string());
                         continue;
                     }
 
@@ -124,8 +124,26 @@ impl ImapHandler {
             .unwrap_or("localhost")
             .to_string();
 
-        let greeting =
-            format!("* OK [CAPABILITY IMAP4rev1 STARTTLS] {} IMAP server ready\r\n", hostname);
+        // Build capabilities dynamically
+        let enable_ssl = self.runtime
+            .config
+            .get_value("imap", "enable_ssl")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+
+        let session = self.session.lock().await;
+        let mut caps: Vec<String> = vec!["IMAP4rev1".to_string()];
+        if enable_ssl && !session.tls_active {
+            // Advertise STARTTLS only on non-TLS connections when SSL is enabled
+            caps.push("STARTTLS".to_string());
+        }
+        drop(session);
+
+        let greeting = format!(
+            "* OK [CAPABILITY {}] {} IMAP server ready\r\n",
+            caps.join(" "),
+            hostname
+        );
         writer.write_all(greeting.as_bytes()).await?;
         writer.flush().await?;
 
@@ -138,6 +156,7 @@ impl ImapHandler {
         command: ImapCommand,
         writer: &mut BufWriter<impl AsyncWriteExt + Unpin>
     ) -> Result<()> {
+        info!("IMAP command received: tag={} cmd={:?}", tag, command);
         
         match command {
             ImapCommand::Capability => self.handle_capability(tag, writer).await,
@@ -180,6 +199,9 @@ impl ImapHandler {
             ImapCommand::Delete { mailbox } => self.handle_delete(tag, mailbox, writer).await,
             ImapCommand::List { reference, pattern } => {
                 self.handle_list(tag, &reference, &pattern, writer).await
+            }
+            ImapCommand::Lsub { reference, pattern } => {
+                self.handle_lsub(tag, &reference, &pattern, writer).await
             }
 
             ImapCommand::Status { mailbox, items } => {
@@ -246,10 +268,15 @@ impl ImapHandler {
             return Ok(());
         }
 
-        // Validate credentials
-        let database = self.runtime.db
-            .get()
-            .ok_or_else(|| anyhow::anyhow!("No database connection"))?;
+        // Validate credentials: allow graceful failure when DB is unavailable
+        let database = match self.runtime.db.get() {
+            Some(db) => db,
+            None => {
+                // Gracefully indicate auth service is unavailable without closing connection
+                self.send_error(writer, tag, "NO", "[UNAVAILABLE] Authentication service unavailable").await?;
+                return Ok(());
+            }
+        };
         let pool = database.pool();
 
         // Authenticate user
@@ -359,24 +386,37 @@ impl ImapHandler {
 
                 session.select_mailbox(selected, !read_only);
 
-                // Send SELECT response
-                let response = format!(
-                    "* {} EXISTS\r\n* {} RECENT\r\n* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n* OK [UIDVALIDITY 1] UIDs valid\r\n* OK [UIDNEXT {}] Predicted next UID\r\n* OK [PERMANENTFLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft \\*)] Limited\r\n{} OK [READ-{}] SELECT completed\r\n",
-                    stats.total,
-                    stats.recent,
-                    stats.total + 1,
-                    tag,
-                    if read_only {
-                        "ONLY"
-                    } else {
-                        "WRITE"
-                    }
-                );
+                // Send SELECT/EXAMINE response (RFC 3501)
+                let cmd_name = if read_only { "EXAMINE" } else { "SELECT" };
 
-                writer.write_all(response.as_bytes()).await?;
+                // Use mailbox uidvalidity if present, else fallback to 1
+                let uidvalidity = mailbox.uidvalidity.unwrap_or(1);
+                let uidnext = stats.total + 1;
+
+                // Write untagged responses line by line to help clients that read incrementally
+                writer.write_all(format!("* {} EXISTS\r\n", stats.total).as_bytes()).await?;
+                writer.write_all(format!("* {} RECENT\r\n", stats.recent).as_bytes()).await?;
+                writer.write_all(b"* FLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft)\r\n").await?;
+                writer.write_all(format!("* OK [UNSEEN {}] First unseen\r\n", stats.unseen).as_bytes()).await?;
+                writer.write_all(format!("* OK [UIDVALIDITY {}] UIDs valid\r\n", uidvalidity).as_bytes()).await?;
+                writer.write_all(format!("* OK [UIDNEXT {}] Predicted next UID\r\n", uidnext).as_bytes()).await?;
+                writer.write_all(b"* OK [PERMANENTFLAGS (\\Answered \\Flagged \\Deleted \\Seen \\Draft \\*)]\r\n").await?;
+                // Final tagged OK line with read/write status per RFC 3501
+                let mode = if read_only { "[READ-ONLY]" } else { "[READ-WRITE]" };
+                writer.write_all(format!("{} OK {} {} completed\r\n", tag, mode, cmd_name).as_bytes()).await?;
                 writer.flush().await?;
 
-                info!("Mailbox selected: {}", mailbox_name);
+                info!(
+                    "{} completed: mailbox={} exists={} recent={} unseen={} uidvalidity={} uidnext={} mode={}",
+                    cmd_name,
+                    mailbox_name,
+                    stats.total,
+                    stats.recent,
+                    stats.unseen,
+                    uidvalidity,
+                    uidnext,
+                    if read_only { "READ-ONLY" } else { "READ-WRITE" }
+                );
                 Ok(())
             }
             Ok(None) => { self.send_error(writer, tag, "NO", "Mailbox does not exist").await }
@@ -487,8 +527,8 @@ impl ImapHandler {
     }
 
     async fn get_sequence_number(&self, pool: &sqlx::MySqlPool, mailbox_id: i64, message_id: i64) -> Result<i64> {
-        // Count messages with lower IDs in the same mailbox (1-based)
-        let query = "SELECT COUNT(*) as seq FROM messages WHERE mailbox_id = ? AND id <= ?";
+        // Count messages with lower IDs in the same mailbox (1-based), excluding soft-deleted
+        let query = "SELECT COUNT(*) as seq FROM messages WHERE mailbox_id = ? AND deleted_at IS NULL AND id <= ?";
         let (seq,): (i64,) = sqlx::query_as(query)
             .bind(mailbox_id)
             .bind(message_id)
@@ -846,6 +886,19 @@ impl ImapHandler {
         Ok(())
     }
 
+    async fn handle_lsub(
+        &self,
+        tag: &str,
+        _reference: &str,
+        _pattern: &str,
+        writer: &mut BufWriter<impl AsyncWriteExt + Unpin>
+    ) -> Result<()> {
+        // Minimal LSUB: acknowledge without returning subscriptions yet
+        writer.write_all(format!("{} OK LSUB completed\r\n", tag).as_bytes()).await?;
+        writer.flush().await?;
+        Ok(())
+    }
+
     async fn handle_literal_start(
         &self,
         session: &mut ImapSession,
@@ -902,14 +955,33 @@ impl ImapHandler {
             // Literal complete, process pending command
             session.in_literal = false;
 
-            if let Some(cmd_str) = session.pending_commands.pop() {
+            if let Some(cmd_line) = session.pending_commands.pop() {
                 if let Some(tag) = session.pending_commands.pop() {
-                    // Parse and process the command
-                    // This is simplified - you'd need to reconstruct the full command
-                    debug!("Literal data received: {} bytes", session.literal_buffer.len());
-
-                    // For APPEND command, the literal contains the message
-                    // For other commands, it might be search criteria, etc.
+                    debug!("Literal data complete: {} bytes", session.literal_buffer.len());
+                    // Attempt to parse the original command line
+                    match parse_command(&cmd_line) {
+                        Ok((_rem, (_t, cmd))) => {
+                            match cmd {
+                                ImapCommand::Append { mailbox, flags, date_time, .. } => {
+                                    // Use buffered literal as message content
+                                    let message = std::mem::take(&mut session.literal_buffer);
+                                    // Collect context
+                                    let user_id = session.authenticated_user_id.unwrap_or(0);
+                                    let selected_id = session.selected_mailbox.as_ref().map(|s| s.id);
+                                    // Process APPEND without locking session
+                                    let _ = self.append_internal(&tag, mailbox, user_id, flags, date_time, message, selected_id, writer).await?;
+                                }
+                                _ => {
+                                    // Fallback: process normally after returning
+                                    // We cannot call process_command here safely due to session locking; acknowledge literal.
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            error!("Failed to parse pending literal command: {}", e);
+                            self.send_error(writer, &tag, "BAD", "Invalid command after literal").await?;
+                        }
+                    }
                 }
             }
         }
@@ -942,8 +1014,62 @@ impl ImapHandler {
         is_uid: bool,
         writer: &mut BufWriter<impl AsyncWriteExt + Unpin>
     ) -> Result<()> {
-        // Implementation for STORE command
-        self.send_error(writer, tag, "OK", "STORE completed (stub)").await
+        let session = self.session.lock().await;
+        if session.state != ImapState::Selected {
+            self.send_error(writer, tag, "BAD", "No mailbox selected").await?;
+            return Ok(());
+        }
+        let selected = session.selected_mailbox.as_ref().ok_or_else(|| anyhow::anyhow!("No mailbox selected"))?;
+        let selected_id = selected.id;
+        let db = self.runtime.db.get().ok_or_else(|| anyhow::anyhow!("No database connection"))?;
+        let pool = db.pool();
+        drop(session);
+
+        let msg_ids = self.resolve_sequence_set(&sequence_set, selected_id, is_uid, pool).await?;
+
+        // Normalize requested flags
+        let mut req_flags: Vec<String> = flags.into_iter().map(|f| f.to_string()).collect();
+        req_flags.sort();
+        req_flags.dedup();
+
+        for mid in msg_ids {
+            // Fetch current flags
+            let current = crate::storage::models::message::get_flags(pool, mid).await.unwrap_or(None).unwrap_or_default();
+            let mut set: Vec<String> = current
+                .split_whitespace()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+
+            match operation {
+                StoreOperation::Add => {
+                    for f in &req_flags {
+                        if !set.iter().any(|x| x.eq_ignore_ascii_case(f)) {
+                            set.push(f.clone());
+                        }
+                    }
+                }
+                StoreOperation::Remove => {
+                    set.retain(|x| !req_flags.iter().any(|f| x.eq_ignore_ascii_case(f)));
+                }
+                StoreOperation::Replace | StoreOperation::Set => {
+                    set = req_flags.clone();
+                }
+            }
+
+            let new_flags = if set.is_empty() { String::new() } else { set.join(" ") };
+            crate::storage::models::message::update_flags(pool, mid, &new_flags).await?;
+
+            // Send updated FLAGS untagged fetch response
+            let seq = self.get_sequence_number(pool, selected_id, mid).await?;
+            let display_flags = if set.is_empty() { String::new() } else { set.join(" ") };
+            let resp = format!("* {} FETCH (FLAGS ({}))\r\n", seq, display_flags);
+            writer.write_all(resp.as_bytes()).await?;
+        }
+
+        writer.write_all(format!("{} OK STORE completed\r\n", tag).as_bytes()).await?;
+        writer.flush().await?;
+        Ok(())
     }
 
     async fn handle_close(
@@ -961,7 +1087,40 @@ impl ImapHandler {
         tag: &str,
         writer: &mut BufWriter<impl AsyncWriteExt + Unpin>
     ) -> Result<()> {
-        self.send_error(writer, tag, "OK", "EXPUNGE completed (stub)").await
+        let session = self.session.lock().await;
+        if session.state != ImapState::Selected {
+            drop(session);
+            return self.send_error(writer, tag, "BAD", "No mailbox selected").await;
+        }
+        let selected = match session.selected_mailbox.as_ref() { Some(s) => s, None => {
+            drop(session);
+            return self.send_error(writer, tag, "BAD", "No mailbox selected").await;
+        }};
+        let selected_id = selected.id;
+        let db = self.runtime.db.get().ok_or_else(|| anyhow::anyhow!("No database connection"))?;
+        let pool = db.pool();
+        drop(session);
+
+        // Find messages flagged as \Deleted and not yet soft-deleted
+        let rows: Vec<(i64,)> = sqlx::query_as(
+            "SELECT id FROM messages WHERE mailbox_id = ? AND deleted_at IS NULL AND (flags LIKE '%\\\\Deleted%' OR flags LIKE '%Deleted%') ORDER BY id"
+        )
+        .bind(selected_id)
+        .fetch_all(pool).await?;
+
+        for (mid,) in rows {
+            // Sequence number before removal
+            let seq = self.get_sequence_number(pool, selected_id, mid).await?;
+            // Mark soft-deleted
+            crate::storage::models::message::mark_deleted(pool, mid).await?;
+            // Emit untagged EXPUNGE
+            let line = format!("* {} EXPUNGE\r\n", seq);
+            writer.write_all(line.as_bytes()).await?;
+        }
+
+        writer.write_all(format!("{} OK EXPUNGE completed\r\n", tag).as_bytes()).await?;
+        writer.flush().await?;
+        Ok(())
     }
 
     async fn handle_check(
@@ -982,7 +1141,40 @@ impl ImapHandler {
         is_move: bool,
         writer: &mut BufWriter<impl AsyncWriteExt + Unpin>
     ) -> Result<()> {
-        self.send_error(writer, tag, "OK", if is_move { "MOVE" } else { "COPY" }).await
+        let session = self.session.lock().await;
+        if session.state != ImapState::Selected {
+            self.send_error(writer, tag, "BAD", "No mailbox selected").await?;
+            return Ok(());
+        }
+        let selected = session.selected_mailbox.as_ref().ok_or_else(|| anyhow::anyhow!("No mailbox selected"))?;
+        let selected_id = selected.id;
+        let db = self.runtime.db.get().ok_or_else(|| anyhow::anyhow!("No database connection"))?;
+        let pool = db.pool();
+
+        // Resolve destination mailbox
+        let user_id = session.authenticated_user_id.ok_or_else(|| anyhow::anyhow!("No authenticated user"))?;
+        let dest = match mailbox::find_by_name(&pool, &user_id, &mailbox).await? {
+            Some(m) => m,
+            None => {
+                self.send_error(writer, tag, "NO", "Destination mailbox does not exist").await?;
+                return Ok(());
+            }
+        };
+        drop(session);
+
+        // Resolve message IDs
+        let msg_ids = self.resolve_sequence_set(&sequence_set, selected_id, false, pool).await?;
+        for mid in msg_ids {
+            let _new_msg = crate::storage::models::message::copy_message_to_mailbox(pool, mid, dest.id).await?;
+            if is_move {
+                crate::storage::models::message::delete_message(pool, mid).await?;
+            }
+        }
+
+        let action = if is_move { "MOVE" } else { "COPY" };
+        writer.write_all(format!("{} OK {} completed\r\n", tag, action).as_bytes()).await?;
+        writer.flush().await?;
+        Ok(())
     }
 
     // ignore unused, it will be implemented later
@@ -1017,7 +1209,56 @@ impl ImapHandler {
         items: Vec<String>,
         writer: &mut BufWriter<impl AsyncWriteExt + Unpin>
     ) -> Result<()> {
-        self.send_error(writer, tag, "OK", "STATUS completed (stub)").await
+        // Must be authenticated
+        let session = self.session.lock().await;
+        if session.state == ImapState::NotAuthenticated {
+            self.send_error(writer, tag, "NO", "Authentication required").await?;
+            return Ok(());
+        }
+
+        let user_id = session.authenticated_user_id.ok_or_else(|| anyhow::anyhow!("No authenticated user"))?;
+        let db = self.runtime.db.get().ok_or_else(|| anyhow::anyhow!("No database connection"))?;
+        let pool = db.pool();
+
+        // Resolve mailbox
+        let mbox = match mailbox::find_by_name(&pool, &user_id, &mailbox).await? {
+            Some(m) => m,
+            None => {
+                self.send_error(writer, tag, "NO", "Mailbox does not exist").await?;
+                return Ok(());
+            }
+        };
+
+        let stats = mailbox::get_mailbox_stats(&pool, mbox.id).await?;
+
+        // Build STATUS response based on requested items
+        let mut pairs: Vec<String> = Vec::new();
+        let req = if items.is_empty() { vec!["MESSAGES","RECENT","UNSEEN","UIDNEXT","UIDVALIDITY"].into_iter().map(String::from).collect() } else { items.clone() };
+        for item in req {
+            match item.to_uppercase().as_str() {
+                "MESSAGES" => pairs.push(format!("MESSAGES {}", stats.total)),
+                "RECENT" => pairs.push(format!("RECENT {}", stats.recent)),
+                "UNSEEN" => pairs.push(format!("UNSEEN {}", stats.unseen)),
+                "UIDNEXT" => {
+                    // Predict next UID as max(id)+1, using total as approximation if unknown
+                    let uid_next = stats.total + 1;
+                    pairs.push(format!("UIDNEXT {}", uid_next));
+                }
+                "UIDVALIDITY" => {
+                    let uidv = mbox.uidvalidity.unwrap_or(1);
+                    pairs.push(format!("UIDVALIDITY {}", uidv));
+                }
+                other => {
+                    // Ignore unsupported items gracefully
+                    tracing::debug!("STATUS item not implemented: {}", other);
+                }
+            }
+        }
+
+        let response = format!("* STATUS {} ({})\r\n{} OK STATUS completed\r\n", mailbox, pairs.join(" "), tag);
+        writer.write_all(response.as_bytes()).await?;
+        writer.flush().await?;
+        Ok(())
     }
 
     // ignore unused, it will be implemented later
@@ -1031,7 +1272,192 @@ impl ImapHandler {
         message: String,
         writer: &mut BufWriter<impl AsyncWriteExt + Unpin>
     ) -> Result<()> {
-        self.send_error(writer, tag, "OK", "APPEND completed (stub)").await
+        // Lock session just to collect context
+        let session_guard = self.session.lock().await;
+        if session_guard.state == ImapState::NotAuthenticated {
+            return self.send_error(writer, tag, "NO", "Authentication required").await;
+        }
+        let user_id = match session_guard.authenticated_user_id { Some(id) => id, None => {
+            return self.send_error(writer, tag, "BAD", "No authenticated user").await;
+        }};
+        let selected_id = session_guard.selected_mailbox.as_ref().map(|s| s.id);
+        let content = if !message.is_empty() { message } else { session_guard.literal_buffer.clone() };
+        drop(session_guard);
+
+        self.append_internal(tag, mailbox, user_id, flags, date_time, content, selected_id, writer).await
+    }
+
+    async fn append_internal(
+        &self,
+        tag: &str,
+        mailbox: String,
+        user_id: i64,
+        flags: Vec<String>,
+        date_time: Option<String>,
+        content: String,
+        selected_mailbox_id: Option<i64>,
+        writer: &mut BufWriter<impl AsyncWriteExt + Unpin>
+    ) -> Result<()> {
+        if content.is_empty() {
+            return self.send_error(writer, tag, "BAD", "Message literal required").await;
+        }
+
+        let runtime = self.runtime.clone();
+        let db = runtime.db.get().ok_or_else(|| anyhow::anyhow!("No database connection"))?;
+        let pool = db.pool();
+
+        // Resolve target mailbox
+        let mbox = match mailbox::find_by_name(&pool, &user_id, &mailbox).await? {
+            Some(m) => m,
+            None => {
+                return self.send_error(writer, tag, "NO", "Mailbox does not exist").await;
+            }
+        };
+
+        // Optional antivirus scan
+        let av_enabled = runtime.config.get_bool("antivirus", "enabled", false);
+        let mut infected_name: Option<String> = None;
+        if av_enabled {
+            if let Ok(res) = self.scan_with_clamav(content.as_bytes()).await {
+                if let Some(v) = res { infected_name = Some(v); }
+            }
+        }
+
+        // Determine AV mode
+        let av_mode = runtime.config.get_value("antivirus", "mode").unwrap_or("tag");
+        if infected_name.is_some() && av_mode.eq_ignore_ascii_case("reject") {
+            return self.send_error(writer, tag, "NO", "APPEND rejected: virus detected").await;
+        }
+
+        // If quarantine mode and infected, switch mailbox to Quarantine
+        let mut target_mbox = mbox;
+        if let Some(_virus) = infected_name.as_ref() {
+            if av_mode.eq_ignore_ascii_case("quarantine") {
+                if let Some(qm) = mailbox::find_by_name(&pool, &user_id, &"Quarantine".to_string()).await? {
+                    target_mbox = qm;
+                } else {
+                    let new_mb = crate::storage::models::mailbox::state::Mailbox {
+                        id: 0,
+                        account_id: user_id,
+                        name: "Quarantine".to_string(),
+                        flags: "".to_string(),
+                        quota: None,
+                        created_at: Utc::now(),
+                        updated_at: Utc::now(),
+                        uidvalidity: None,
+                    };
+                    target_mbox = mailbox::create_mailbox(&pool, &new_mb).await?;
+                }
+            }
+        }
+
+        // Upload to S3 and insert object key
+        let key = format!("{}/{}-{}.eml", target_mbox.id, chrono::Utc::now().timestamp(), crate::utils::uuid7());
+        let obj = object::add_object_bytes(&runtime, &key, content.as_bytes()).await?;
+
+        // Minimal header extraction
+        let mut from = String::new();
+        let mut subject = String::new();
+        for line in content.lines().take(64) {
+            if from.is_empty() && line.to_ascii_lowercase().starts_with("from:") {
+                from = line[5..].trim().to_string();
+            }
+            if subject.is_empty() && line.to_ascii_lowercase().starts_with("subject:") {
+                subject = line[8..].trim().to_string();
+            }
+            if !from.is_empty() && !subject.is_empty() { break; }
+        }
+
+        let header_json = serde_json::json!({
+            "from": from,
+            "subject": subject,
+            "date_time": date_time,
+            "infected": infected_name,
+        });
+
+        let new_msg = message::Message {
+            id: 0,
+            mailbox_id: target_mbox.id,
+            object_id: obj.id,
+            sender: from.clone(),
+            subject: subject.clone(),
+            header: sqlx::types::Json(header_json),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            size: obj.size,
+            uid: 0,
+        };
+        let created = message::create_message(&pool, &new_msg).await?;
+
+        // Apply flags
+        let mut final_flags = flags.clone();
+        if infected_name.is_some() && av_mode.eq_ignore_ascii_case("tag") {
+            final_flags.push("$Virus".to_string());
+        }
+        if !final_flags.is_empty() {
+            let flags_str = final_flags.join(" ");
+            let _ = message::update_flags(&pool, created.id, &flags_str).await;
+        }
+
+        // Emit EXISTS/RECENT if selected mailbox matches
+        if let Some(sel_id) = selected_mailbox_id {
+            if sel_id == target_mbox.id {
+                let stats = mailbox::get_mailbox_stats(&pool, target_mbox.id).await?;
+                writer.write_all(format!("* {} EXISTS\r\n", stats.total).as_bytes()).await?;
+                writer.write_all(format!("* {} RECENT\r\n", stats.recent).as_bytes()).await?;
+            }
+        }
+
+        // UIDPLUS APPENDUID
+        let uidv = target_mbox.uidvalidity.unwrap_or(1);
+        writer.write_all(format!("{} OK [APPENDUID {} {}] APPEND completed\r\n", tag, uidv, created.id).as_bytes()).await?;
+        writer.flush().await?;
+        Ok(())
+    }
+
+    async fn scan_with_clamav(&self, bytes: &[u8]) -> Result<Option<String>> {
+        use tokio::net::TcpStream;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let host = self.runtime.config.get_value("antivirus", "host").unwrap_or("localhost");
+        let port = self.runtime.config.get_int("antivirus", "port", 3310);
+        let addr = format!("{}:{}", host, port);
+        match TcpStream::connect(addr).await {
+            Ok(mut stream) => {
+                // INSTREAM protocol
+                stream.write_all(b"INSTREAM\n").await?;
+                let mut offset = 0usize;
+                while offset < bytes.len() {
+                    let chunk = &bytes[offset..bytes.len().min(offset + 8192)];
+                    let len = (chunk.len() as u32).to_be_bytes();
+                    stream.write_all(&len).await?;
+                    stream.write_all(chunk).await?;
+                    offset += chunk.len();
+                }
+                // zero-length chunk to terminate
+                stream.write_all(&0u32.to_be_bytes()).await?;
+                stream.flush().await?;
+
+                // Read response
+                let mut buf = vec![0u8; 1024];
+                let n = stream.read(&mut buf).await.unwrap_or(0);
+                let resp = String::from_utf8_lossy(&buf[..n]).to_string();
+                // Example: "stream: OK" or "stream: Eicar-Test-Signature FOUND"
+                if resp.contains("FOUND") {
+                    // extract virus name
+                    if let Some(colon) = resp.find(':') {
+                        let s = resp[colon+1..].trim();
+                        let name = s.trim_end_matches("FOUND").trim().to_string();
+                        return Ok(Some(name));
+                    }
+                    return Ok(Some("UNKNOWN".to_string()));
+                }
+                Ok(None)
+            }
+            Err(_) => {
+                // Treat as clean if AV server unavailable
+                Ok(None)
+            }
+        }
     }
 
     // ignore unused, it will be implemented later
@@ -1055,7 +1481,9 @@ impl ImapHandler {
         tag: &str,
         writer: &mut BufWriter<impl AsyncWriteExt + Unpin>
     ) -> Result<()> {
-        self.send_error(writer, tag, "BAD", "STARTTLS not available").await
+        // STARTTLS is not supported for on-the-fly upgrade in this handler yet
+        // Only advertise when SSL is enabled to be RFC-friendly, but respond BAD here.
+        self.send_error(writer, tag, "BAD", "STARTTLS not implemented").await
     }
 
     // ignore unused, it will be implemented later

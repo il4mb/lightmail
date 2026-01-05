@@ -38,5 +38,5 @@
 !*.md
 !TODO.md
 !INSTALL.md
-!tests/
+# !tests/
 !test_imap.sh

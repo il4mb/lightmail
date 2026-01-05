@@ -3,6 +3,10 @@ name = "lightmail"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "lightmail"
+path = "src/lib.rs"
+
 [dependencies]
 tokio = { version = "1.37", features = ["full"] }
 tokio-util = "0.7.17"
@@ -30,7 +34,7 @@ tokio-rustls = "0.26.4"
 rustls-pemfile = "2.2.0"
 bcrypt = "0.17.1"
 axum = "0.8.8"
- tower-http = { version = "0.6.8", features = ["trace"] }
+tower-http = { version = "0.6.8", features = ["trace"] }
 clamav-client = { version = "2.2.0", features = ["tokio-stream"] }
 
 [profile.release]

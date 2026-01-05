@@ -60,6 +60,39 @@ impl Runtime {
         self.db.set(db).map_err(|_| anyhow::anyhow!("Database already initialized"))?;
 
         tracing::info!("Database initialized");
+
+        // Ensure soft-delete columns exist for garbage collection workflow
+        self.ensure_soft_delete_schema().await?;
+        Ok(())
+    }
+
+    async fn ensure_soft_delete_schema(&self) -> anyhow::Result<()> {
+        // removed unused Row import
+        let db = self.db.get().ok_or_else(|| anyhow::anyhow!("DB not initialized"))?;
+        let pool = db.pool();
+        let schema = self.config.get_value("database", "database").unwrap_or("maildb");
+
+        // Helper to add deleted_at if missing
+        async fn add_deleted_at_if_missing(pool: &sqlx::MySqlPool, schema: &str, table: &str) -> anyhow::Result<()> {
+            let exists: (i64,) = sqlx::query_as(
+                "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND column_name = 'deleted_at'"
+            )
+            .bind(schema)
+            .bind(table)
+            .fetch_one(pool).await?;
+
+            if exists.0 == 0 {
+                let alter = format!("ALTER TABLE {} ADD COLUMN deleted_at TIMESTAMP NULL DEFAULT NULL AFTER updated_at", table);
+                let _ = sqlx::query(&alter).execute(pool).await?;
+            }
+            Ok(())
+        }
+
+        add_deleted_at_if_missing(pool, schema, "messages").await?;
+        add_deleted_at_if_missing(pool, schema, "mailboxes").await?;
+        // Optional: calendars table when present
+        let _ = add_deleted_at_if_missing(pool, schema, "calendars").await;
+
         Ok(())
     }
 
@@ -102,6 +135,16 @@ impl Runtime {
         
         self.init_db().await?;
         self.init_s3().await?;
+
+        // Start garbage worker
+        {
+            let rt = Arc::clone(&self);
+            tasks.push(tokio::spawn(async move {
+                if let Err(e) = crate::utils::garbage::run_garbage_worker(rt).await {
+                    tracing::error!("Garbage worker stopped: {}", e);
+                }
+            }));
+        }
 
         if self.config.is_section_exists("imap") {
             let rt = Arc::clone(&self);

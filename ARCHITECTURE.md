@@ -12,6 +12,7 @@ The `Runtime` struct is the heart of the application. It initializes and manages
 - **Database Connection**: Connection pool to MySQL via `sqlx`.
 - **S3 Client**: Async client for object storage via `aws-sdk-s3`.
 - **Protocol Servers**: Spawns tasks for IMAP, LMTP, POP3, and HTTP API.
+- **Background Workers**: Spawns the Garbage Worker to process soft-deletes.
 
 ### 2. Protocols (`src/protocol/`)
 LightMail supports multiple protocols, each implemented as a separate module:
@@ -21,6 +22,9 @@ LightMail supports multiple protocols, each implemented as a separate module:
   - Handles client sessions, state machine (NotAuthenticated, Authenticated, Selected).
   - Uses `nom` for parsing IMAP commands.
   - Supports IDLE for real-time updates.
+  - APPEND with optional antivirus scanning (ClamAV INSTREAM).
+  - UIDPLUS: returns `APPENDUID` on successful APPEND.
+  - MOVE and COPY implemented; EXPUNGE performs soft-delete.
 
 - **LMTP (`src/protocol/lmtp/`)**:
   - Implements RFC 2033.
@@ -54,6 +58,7 @@ The storage layer abstracts the underlying data stores.
 - **Authentication**: Passwords hashed with `bcrypt` or `argon2`.
 - **TLS**: Native TLS support using `rustls`.
 - **Antivirus**: Integration with ClamAV for scanning incoming mail.
+  - Modes: `reject`, `quarantine`, `tag` for infected content handling.
 
 ## Data Flow
 
@@ -63,8 +68,14 @@ The storage layer abstracts the underlying data stores.
 2. **Mail Retrieval (IMAP)**:
    Client -> TCP/TLS -> Auth (MySQL) -> List/Select (MySQL) -> Fetch Body (S3) -> Client
 
-3. **Mail Retrieval (POP3)**:
+3. **Message Append (IMAP)**:
+  Client -> APPEND literal -> Antivirus (optional) -> Upload to S3 -> Insert metadata -> `APPENDUID` -> EXISTS/RECENT update
+
+4. **Mail Retrieval (POP3)**:
    Client -> TCP/TLS -> Auth (MySQL) -> List (MySQL) -> Retr (S3) -> Client
+
+5. **Garbage Collection**:
+  Soft-deleted messages -> Worker batches -> Delete S3 -> Delete `object_keys` -> Delete `messages` -> Metrics
 
 ## Concurrency Model
 LightMail uses `tokio` for asynchronous I/O. Each client connection is handled in its own lightweight task. Shared state (like DB pool and S3 client) is wrapped in `Arc` and shared across tasks.

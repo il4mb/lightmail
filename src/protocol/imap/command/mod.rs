@@ -50,6 +50,7 @@ fn parse_command_body(input: &str) -> IResult<&str, ImapCommand> {
         parse_delete,
         parse_rename,
         parse_list,
+        parse_lsub,
         parse_status,
         parse_append,
         parse_check,
@@ -214,6 +215,22 @@ fn parse_list(input: &str) -> IResult<&str, ImapCommand> {
     Ok((
         input,
         ImapCommand::List {
+            reference: reference.to_string(),
+            pattern: pattern.to_string(),
+        },
+    ))
+}
+
+fn parse_lsub(input: &str) -> IResult<&str, ImapCommand> {
+    let (input, _) = tag_no_case("LSUB").parse(input)?;
+    let (input, _) = space1(input)?;
+    let (input, reference) = parse_mailbox(input)?;
+    let (input, _) = space1(input)?;
+    let (input, pattern) = parse_mailbox(input)?;
+
+    Ok((
+        input,
+        ImapCommand::Lsub {
             reference: reference.to_string(),
             pattern: pattern.to_string(),
         },

@@ -174,7 +174,7 @@ pub async fn get_mailbox_stats(
 ) -> anyhow::Result<MailboxStats> {
     let query =
         r#"
-            SELECT
+            SELECT 
             COUNT(*) AS total,
             CAST(COALESCE(SUM(flags LIKE '%\\Seen%'), 0) AS SIGNED) AS seen,
             CAST(
@@ -194,7 +194,7 @@ pub async fn get_mailbox_stats(
                 ) AS SIGNED
             ) AS recent
             FROM messages
-            WHERE mailbox_id = ?
+            WHERE mailbox_id = ? AND deleted_at IS NULL
         "#;
 
     let (total, seen, unseen, recent): (i64, i64, i64, i64) = sqlx

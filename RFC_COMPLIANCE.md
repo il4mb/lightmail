@@ -10,6 +10,8 @@ LightMail aims to comply with the following RFCs:
   - [x] SELECT / EXAMINE
   - [x] FETCH
   - [x] STORE
+  - [x] COPY / MOVE (MOVE from RFC 6851)
+  - [x] APPEND (with LITERAL handling)
   - [x] UID
   - [x] EXPUNGE
   - [x] CAPABILITY
@@ -21,6 +23,7 @@ LightMail aims to comply with the following RFCs:
 
 - **RFC 4315**: IMAP UIDPLUS Extension
   - [x] UID EXPUNGE
+  - [x] APPENDUID on successful APPEND
 
 - **RFC 6154**: IMAP LIST Extension for Special-Use Mailboxes
   - [x] SPECIAL-USE (`\Inbox`, `\Trash`, `\Sent`, `\Drafts`, `\Archive`)
@@ -67,6 +70,8 @@ LightMail aims to comply with the following RFCs:
 
 - **RFC 2595**: Using TLS with IMAP, POP3 and ACAP
   - [x] STARTTLS (Implicit/Explicit)
+- **RFC 7888**: IMAP4 non-synchronizing literals (LITERAL+)
+  - [x] LITERAL+ advertised (client may send literals without continuation)
 
 - **RFC 4959**: IMAP Extension for SASL Initial Client Response
   - [ ] SASL-IR

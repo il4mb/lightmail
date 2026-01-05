@@ -218,18 +218,9 @@ impl ImapSession {
     }
 
     pub fn get_capabilities_string(&self) -> String {
-        let mut caps = self.capabilities.clone();
-
-        // Add capabilities based on state
-        if self.state == ImapState::NotAuthenticated {
-            caps.push("LOGINDISABLED".to_string()); // If you don't allow plain auth over non-TLS
-        }
-
-        if self.tls_active {
-            caps.push("LOGINDISABLED".to_string()); // Actually should remove if TLS is active
-        }
-
-        caps.join(" ")
+        // Return configured capability list; STARTTLS and authentication policy
+        // are handled by the handler/greeting layer per connection state.
+        self.capabilities.join(" ")
     }
 
     // ignore unused, it will be implemented later

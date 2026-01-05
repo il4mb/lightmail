@@ -38,6 +38,10 @@ pub enum ImapCommand {
         reference: String,
         pattern: String,
     },
+    Lsub {
+        reference: String,
+        pattern: String,
+    },
     Status {
         mailbox: String,
         items: Vec<String>,

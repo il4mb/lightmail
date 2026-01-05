@@ -158,6 +158,11 @@ async fn handle_imap_connection(
         // --- Handle TLS Connection ---
         match acceptor.accept(stream).await {
             Ok(tls_stream) => {
+                // Mark session as TLS-active
+                {
+                    let mut s = session.lock().await;
+                    s.tls_active = true;
+                }
                 // Assuming ImapHandler::handle_connection accepts generic AsyncRead + AsyncWrite
                 if let Err(e) = handler.handle_connection(tls_stream).await {
                     error!("IMAPS connection error for {}: {}", client_id, e);
@@ -169,6 +174,10 @@ async fn handle_imap_connection(
         }
     } else {
         // --- Handle Plain Connection ---
+        {
+            let mut s = session.lock().await;
+            s.tls_active = false;
+        }
         if let Err(e) = handler.handle_connection(stream).await {
             error!("IMAP connection error for {}: {}", client_id, e);
         }

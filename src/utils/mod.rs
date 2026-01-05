@@ -1,4 +1,5 @@
 pub mod config;
+pub mod garbage;
 
 use uuid::{NoContext, Timestamp, Uuid};
 
