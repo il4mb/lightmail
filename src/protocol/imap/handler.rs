@@ -141,12 +141,9 @@ impl ImapHandler {
                 caps.push(c.clone());
             }
         }
-        if enable_ssl && !session.tls_active {
-            // Advertise STARTTLS only on non-TLS connections when SSL is enabled
-            if !caps.iter().any(|x| x.eq_ignore_ascii_case("STARTTLS")) {
-                caps.push("STARTTLS".to_string());
-            }
-        }
+        // NOTE: STARTTLS upgrade is intentionally not advertised because the
+        // connection upgrade flow is not implemented (see handle_starttls).
+        let _ = enable_ssl; // keep config read for future behavior
         drop(session);
 
         let greeting = format!(

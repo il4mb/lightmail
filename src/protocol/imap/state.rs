@@ -102,17 +102,15 @@ pub struct MailboxCacheEntry {
 
 impl ImapSession {
     pub fn new(client_id: String) -> Self {
+        // Capabilities should reflect what the server truly implements.
+        // IMAP4rev1 is added by the greeting/CAPABILITY handlers.
         let mut capabilities = vec![
-            "IMAP4rev1".to_string(),
             "IDLE".to_string(),
             "UIDPLUS".to_string(),
             "MOVE".to_string(),
             "LITERAL+".to_string(),
-            "SASL-IR".to_string(),
             "ENABLE".to_string(),
-            "CONDSTORE".to_string(),
-            "UTF8=ACCEPT".to_string(),
-            "UTF8=ONLY".to_string()
+            "NAMESPACE".to_string(),
         ];
 
         // Add AUTH mechanisms
@@ -128,8 +126,8 @@ impl ImapSession {
             capabilities,
             session_flags: SessionFlags {
                 idle_supported: true,
-                condstore_supported: true,
-                qresync_supported: true,
+                condstore_supported: false,
+                qresync_supported: false,
                 enable_sent: false,
                 literal_plus_supported: true,
             },

@@ -164,6 +164,15 @@ impl Runtime {
             );
         }
 
+        if self.config.is_section_exists("smtp_server") {
+            let rt = Arc::clone(&self);
+            tasks.push(
+                tokio::spawn(async move {
+                    let _ = protocol::smtp::server::run_smtp_server(rt).await;
+                })
+            );
+        }
+
         if self.config.is_section_exists("pop3") {
             let rt = Arc::clone(&self);
             tasks.push(

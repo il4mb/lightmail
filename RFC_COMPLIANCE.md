@@ -29,7 +29,7 @@ LightMail aims to comply with the following RFCs:
   - [x] SPECIAL-USE (`\Inbox`, `\Trash`, `\Sent`, `\Drafts`, `\Archive`)
 
 - **RFC 7162**: IMAP Extensions: QUICKRESYNC and CONDSTORE
-  - [ ] CONDSTORE (Planned)
+  - [ ] CONDSTORE / QRESYNC (Planned)
 
 - **RFC 2971**: IMAP4 ID Extension
   - [ ] ID
@@ -69,9 +69,29 @@ LightMail aims to comply with the following RFCs:
 ## Security
 
 - **RFC 2595**: Using TLS with IMAP, POP3 and ACAP
-  - [x] STARTTLS (Implicit/Explicit)
+  - [x] Implicit TLS (IMAPS / POP3S listeners)
+  - [ ] STARTTLS upgrade (on-the-fly TLS upgrade) (Planned)
 - **RFC 7888**: IMAP4 non-synchronizing literals (LITERAL+)
   - [x] LITERAL+ advertised (client may send literals without continuation)
 
 - **RFC 4959**: IMAP Extension for SASL Initial Client Response
   - [ ] SASL-IR
+
+## SMTP / Submission
+
+- **RFC 5321**: SMTP (Server)
+  - [x] Inbound SMTP server (local delivery)
+  - [ ] Outbound SMTP relay server (Not implemented)
+
+- **ESMTP extensions**
+  - [x] PIPELINING
+  - [x] SIZE
+  - [x] STARTTLS (server-side)
+  - [x] AUTH (server-side) (PLAIN, LOGIN)
+
+- **SMTP Submission (RFC 6409)**
+  - [x] Submission listeners on 587/465
+
+Note: LightMail currently includes an outbound SMTP *client* used by the Admin HTTP API
+(`/admin/send`) that supports STARTTLS/SMTPS and AUTH (PLAIN/LOGIN), but it is not a
+standalone SMTP server.

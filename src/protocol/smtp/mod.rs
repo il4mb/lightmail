@@ -7,6 +7,8 @@ use tracing::info;
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 
+pub mod server;
+
 pub async fn send_email(runtime: Arc<Runtime>, from: &str, to: &[String], data: &str) -> Result<()> {
     let host = runtime.config.get_value("smtp", "host").unwrap_or("127.0.0.1").to_string();
     let use_smtps = runtime.config.get_bool("smtp", "use_smtps", false);

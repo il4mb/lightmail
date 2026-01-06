@@ -10,16 +10,18 @@ password =
 database = maildb
 pool_size = 10
 
+# Optional pool tuning (seconds)
+# pool_idle_timeout = 300
+# pool_max_lifetime = 3600
+# connect_timeout = 10
+
 [imap]
+bind = 0.0.0.0
 port = 143
 ssl_port = 993
-max_clients = 100
+max_connections = 100
 buffer_size = 8192
 session_timeout = 1800
-use_starttls = true
-auth_method = plain
-username =
-password =
 max_failed_attempts = 5
 enable_ssl = true
 tls_cert = /var/projects/lightmail/certs/cert.pem
@@ -29,16 +31,64 @@ rate_limit_window_secs = 10
 rate_limit_commands = 50
 
 [lmtp]
+socket = /tmp/lightmail-lmtp.socket
+# Max message size enforced by LMTP/APPEND paths (bytes)
+max_message_size = 52428800
+
+[pop3]
+bind = 0.0.0.0
+port = 110
+ssl_port = 995
+max_connections = 100
+buffer_size = 8192
+session_timeout = 1800
+enable_ssl = true
+tls_cert = /var/projects/lightmail/certs/cert.pem
+tls_key = /var/projects/lightmail/certs/key.pem
+tls_only = false
+
+[smtp]
+# Outbound SMTP client settings (used by the Admin API /admin/send)
 host = 127.0.0.1
 port = 25
+smtps_port = 465
+use_starttls = true
+use_smtps = false
+auto_tls_fallback = true
+auth_method = plain   # plain|login
+username =
+password =
+
+[smtp_server]
+# Inbound SMTP/Submission server (RFC 5321 + submission)
+bind = 0.0.0.0
+port = 25
+submission_port = 587
+smtps_port = 465
+
+# Enable TLS material for STARTTLS (ports 25/587) and implicit TLS (465)
+enable_ssl = true
+enable_starttls = true
+tls_cert = /var/projects/lightmail/certs/cert.pem
+tls_key = /var/projects/lightmail/certs/key.pem
+
+# AUTH policy
+require_auth_smtp = false
+require_auth_submission = true
+auth_require_tls = false
+
+# SIZE extension limit (bytes)
+max_message_size = 52428800
+
+# Connection limiter
+max_connections = 200
 
 [logging]
 path = /var/log/lightmail/lightmail.log
-
-[ssl]
-cert_file = /var/projects/lightmail/certs/cert.pem
-key_file = /var/projects/lightmail/certs/key.pem
-smtps_port = 465
+# Output JSON logs (true/false)
+json = false
+# Log level: trace|debug|info|warn|error
+level = info
 
 [s3]
 endpoint = 
@@ -46,8 +96,6 @@ region = us-east-1
 bucket = mails
 access_key = 
 secret_key = 
-use_smtps = false
-auto_tls_fallback = true
 use_ssl = 1
 
 [api]
