@@ -30,6 +30,7 @@ LightMail is a modern, async mail server implemented in Rust. It provides IMAP, 
   - MySQL for metadata only (accounts, mailboxes, messages, flags, UIDVALIDITY)
 
 See [ARCHITECTURE.md](ARCHITECTURE.md), [RFC_COMPLIANCE.md](RFC_COMPLIANCE.md), and [STORAGE.md](STORAGE.md) for details.
+For admin-only HTTP management, see [docs/API.md](docs/API.md).
 
 ## Configuration
 The default config is in [config/lightmail.conf](config/lightmail.conf) and symlinked at `/var/lightmail/config.ini`.

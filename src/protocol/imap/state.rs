@@ -75,6 +75,9 @@ pub struct ImapSession {
     pub literal_remaining: usize,
     pub literal_buffer: String,
 
+    // Failed command attempts counter
+    pub failed_attempts: u32,
+
     // Mailbox cache for performance
     mailbox_cache: Arc<RwLock<HashMap<Uuid, MailboxCacheEntry>>>,
 }
@@ -139,6 +142,7 @@ impl ImapSession {
             in_literal: false,
             literal_remaining: 0,
             literal_buffer: String::new(),
+            failed_attempts: 0,
             mailbox_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }

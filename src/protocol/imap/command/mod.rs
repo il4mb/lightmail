@@ -400,15 +400,13 @@ fn parse_mailbox(input: &str) -> IResult<&str, &str> {
             take_while(|c: char| c != '\''),
             char('\'')
         ),
-        // Astring (simplified)
+        // Astring allowing wildcards (* and %) for LIST/LSUB patterns
         take_while1(
             |c: char|
                 c.is_ascii_graphic() &&
                 c != '{' &&
                 c != '(' &&
                 c != ')' &&
-                c != '%' &&
-                c != '*' &&
                 c != '"' &&
                 c != '\'' &&
                 !c.is_whitespace()

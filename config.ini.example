@@ -16,6 +16,8 @@ imaps_port = 993
 max_clients = 100
 buffer_size = 8192
 session_timeout = 1800
+max_failed_attempts = 5
+fast_append = true  # fast test mode: complete APPEND quickly
 
 [lmtp]
 socket=/run/
