@@ -10,7 +10,7 @@ use crate::{
     storage::models::{ account, mailbox, message, object },
     utils::uuid7,
 };
-use anyhow::{ Context, Result };
+use anyhow::{ Result };
 use std::{ collections::HashMap, path::Path, sync::Arc };
 use sqlx::{ MySqlPool, types::Json };
 use chrono::{ Utc };
@@ -44,8 +44,7 @@ pub async fn handle_client(
     let mut protocol_error_count = 0;
     const MAX_PROTOCOL_ERRORS: u8 = 5;
 
-    // Get database pool and configuration
-    let pool = runtime.db.get().context("Database pool not available")?.pool();
+    // Configuration (DB accessed lazily when needed)
     let hostname = runtime.config.get_value("system", "hostname").unwrap_or("localhost");
     let max_message_size: usize = runtime.config
         .get_value("lmtp", "max_message_size")
@@ -140,7 +139,12 @@ pub async fn handle_client(
                 }
 
                 // Check if recipient exists in database
-                match validate_recipient(pool, recipient).await {
+                let pool = if let Some(db) = runtime.db.get() { db.pool() } else {
+                    // DB not initialized yet; treat as temporary failure
+                    write_half.write_all(b"451 4.3.0 Temporary lookup failure\r\n").await?;
+                    continue;
+                };
+                match validate_recipient(&pool, recipient).await {
                     Ok(Some((account_id, mailbox_id))) => {
                         transaction.add_recipient(recipient.clone(), account_id, mailbox_id);
                         write_half.write_all(b"250 2.1.5 Recipient OK\r\n").await?;
@@ -212,8 +216,21 @@ pub async fn handle_client(
                     }
                 };
 
+                // Obtain DB pool lazily for delivery
+                let pool = if let Some(db) = runtime.db.get() { db.pool() } else {
+                    // Could not access DB; fail all recipients temporarily
+                    for r in &transaction.recipients {
+                        write_half.write_all(
+                            format!("451 4.3.0 Temporary failure for {}\r\n", r.email).as_bytes()
+                        ).await?;
+                    }
+                    transaction.reset().await;
+                    protocol_state = LmtpProtocolState::LhloReceived;
+                    continue;
+                };
+
                 let delivery_results = deliver_message_to_recipients(
-                    pool,
+                    &pool,
                     &transaction,
                     &runtime,
                     &data_bytes,
