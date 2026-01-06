@@ -5,6 +5,7 @@
 !/src/
 !/include/
 !/sql/
+!/test
 
 # 3. Ignore build / generated stuff
 /dist/

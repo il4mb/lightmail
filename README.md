@@ -39,6 +39,55 @@ Key sections:
 - `[database]`: MySQL connection (host/port or socket), user, password, database
 - `[s3]`: endpoint, bucket, region, access/secret keys
 - `[imap]`, `[pop3]`, `[lmtp]`, `[api]`: enable/disable modules and ports
+- `[smtp_server]`: inbound SMTP/Submission server (AUTH uses per-account credentials from the `accounts` table)
+- `[smtp]`: outbound SMTP client settings (used by the Admin API for sending mail)
+
+## Installation
+
+### Option A: Build from source (recommended)
+Prerequisites:
+- Rust toolchain (stable)
+- MySQL (or compatible) for metadata
+- S3-compatible object storage (MinIO, AWS S3, etc.)
+
+Build:
+```bash
+cargo build --release
+```
+
+Install binary:
+```bash
+sudo install -m 0755 target/release/lightmail /usr/local/bin/lightmail
+```
+
+Install configuration:
+```bash
+sudo mkdir -p /etc/lightmail
+sudo cp config.ini.example /etc/lightmail/config.ini
+```
+
+Initialize database schema (creates `maildb` by default):
+```bash
+mysql -u root -p < sql/schema.sql
+```
+
+Systemd service:
+- A sample unit file is provided as [lightmail.service](lightmail.service).
+- Copy it into place and start the service:
+```bash
+sudo cp lightmail.service /etc/systemd/system/lightmail.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now lightmail
+```
+
+By default the service loads `/etc/lightmail/config.ini`.
+
+### Option B: Install from a prebuilt binary
+If you already have a `lightmail` binary (for example, from a release artifact), install it to a system PATH location:
+```bash
+sudo install -m 0755 lightmail /usr/local/bin/lightmail
+```
+Then follow the same configuration + systemd steps as above.
 
 ## Running
 
@@ -48,6 +97,45 @@ cargo run
 ```
 
 By default, servers start for the enabled sections in `config.ini`. Ensure MySQL and S3 are reachable and configured.
+
+## Postfix integration (recommended)
+If you want to use Postfix for internet-facing SMTP (queueing, retry, DNS checks, etc.) and use LightMail as the mailbox server (IMAP/POP3 storage), the cleanest integration is:
+
+- Postfix receives mail from the internet.
+- Postfix delivers to LightMail via LMTP over a local UNIX socket.
+
+### 1) Enable LMTP in LightMail
+In `/etc/lightmail/config.ini`:
+```
+[lmtp]
+socket = /tmp/lightmail-lmtp.socket
+max_message_size = 52428800
+```
+Make sure the LightMail service user has permission to create/write the socket path.
+
+### 2) Configure Postfix to deliver via LMTP
+Add this to `/etc/postfix/main.cf`:
+```
+# Deliver local mail to LightMail over LMTP
+virtual_transport = lmtp:unix:/tmp/lightmail-lmtp.socket
+```
+
+If you only want some domains/users to go to LightMail, use `transport_maps` instead (domain-based routing):
+```
+transport_maps = hash:/etc/postfix/transport
+```
+Example `/etc/postfix/transport`:
+```
+example.com lmtp:unix:/tmp/lightmail-lmtp.socket
+```
+Then run:
+```bash
+sudo postmap /etc/postfix/transport
+sudo systemctl reload postfix
+```
+
+### 3) Run LightMail behind Postfix (optional)
+If Postfix is your front-door MTA, you can keep LightMail’s inbound SMTP (`[smtp_server]`) bound to localhost only (or disable it) and rely on LMTP for delivery.
 
 ### Testing IMAP
 Use the enhanced test script:
@@ -111,7 +199,7 @@ pause_seconds = 5     # Pause between batches
 Adjust these values to match your storage throughput and operational needs.
 
 ## Security
-- Password hashing: bcrypt (Argon2 optional)
+- Password hashing: bcrypt
 - TLS via rustls
 - Input validation for IMAP literals and POP3 lines
 - Optional rate limiting and anti-bruteforce (roadmap)

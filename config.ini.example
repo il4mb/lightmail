@@ -60,6 +60,8 @@ auth_method = plain   # plain|login
 
 [smtp_server]
 # Inbound SMTP/Submission server (RFC 5321 + submission)
+# Note: there is NO single global username/password here.
+# SMTP AUTH uses per-account credentials from the `accounts` table (same as IMAP/POP3).
 bind = 0.0.0.0
 port = 25
 submission_port = 587
@@ -72,6 +74,7 @@ tls_cert = /var/projects/lightmail/certs/cert.pem
 tls_key = /var/projects/lightmail/certs/key.pem
 
 # AUTH policy
+enable_auth = true
 require_auth_smtp = false
 require_auth_submission = true
 auth_require_tls = false

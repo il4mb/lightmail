@@ -73,6 +73,13 @@ pub async fn run_smtp_server(runtime: Arc<Runtime>) -> anyhow::Result<()> {
     let require_auth_submission = cfg.get_bool("smtp_server", "require_auth_submission", true);
     let require_auth_smtp = cfg.get_bool("smtp_server", "require_auth_smtp", false);
     let auth_require_tls = cfg.get_bool("smtp_server", "auth_require_tls", false);
+    let enable_auth = cfg.get_bool("smtp_server", "enable_auth", true);
+
+    if !enable_auth && (require_auth_submission || require_auth_smtp) {
+        return Err(anyhow!(
+            "smtp_server.enable_auth=false is incompatible with require_auth_* (AUTH is disabled)"
+        ));
+    }
 
     let tls_acceptor = if enable_ssl {
         let cert_path = cfg
@@ -106,6 +113,7 @@ pub async fn run_smtp_server(runtime: Arc<Runtime>) -> anyhow::Result<()> {
                     enable_starttls,
                     enable_ssl: tls_acceptor.is_some(),
                     require_auth: require_auth_smtp,
+                    enable_auth,
                     auth_require_tls,
                     max_message_size,
                 },
@@ -133,6 +141,7 @@ pub async fn run_smtp_server(runtime: Arc<Runtime>) -> anyhow::Result<()> {
                     enable_starttls: enable_starttls && tls_acceptor.is_some(),
                     enable_ssl: tls_acceptor.is_some(),
                     require_auth: require_auth_submission,
+                    enable_auth,
                     auth_require_tls,
                     max_message_size,
                 },
@@ -158,6 +167,7 @@ pub async fn run_smtp_server(runtime: Arc<Runtime>) -> anyhow::Result<()> {
                     semaphore,
                     ListenerKind::Smtps {
                         require_auth: require_auth_submission,
+                        enable_auth,
                         auth_require_tls: false,
                         max_message_size,
                     },
@@ -179,6 +189,7 @@ enum ListenerKind {
         enable_starttls: bool,
         enable_ssl: bool,
         require_auth: bool,
+        enable_auth: bool,
         auth_require_tls: bool,
         max_message_size: usize,
     },
@@ -186,11 +197,13 @@ enum ListenerKind {
         enable_starttls: bool,
         enable_ssl: bool,
         require_auth: bool,
+        enable_auth: bool,
         auth_require_tls: bool,
         max_message_size: usize,
     },
     Smtps {
         require_auth: bool,
+        enable_auth: bool,
         auth_require_tls: bool,
         max_message_size: usize,
     },
@@ -375,26 +388,29 @@ async fn handle_connection(
 ) -> Result<()> {
     let hostname = runtime.config.get_value("system", "hostname").unwrap_or("localhost");
 
-    let (implicit_tls, enable_starttls, enable_ssl, require_auth, auth_require_tls, max_message_size) = match kind {
+    let (implicit_tls, enable_starttls, enable_ssl, require_auth, enable_auth, auth_require_tls, max_message_size) = match kind {
         ListenerKind::PlainSmtp {
             enable_starttls,
             enable_ssl,
             require_auth,
+            enable_auth,
             auth_require_tls,
             max_message_size,
-        } => (false, enable_starttls, enable_ssl, require_auth, auth_require_tls, max_message_size),
+        } => (false, enable_starttls, enable_ssl, require_auth, enable_auth, auth_require_tls, max_message_size),
         ListenerKind::Submission {
             enable_starttls,
             enable_ssl,
             require_auth,
+            enable_auth,
             auth_require_tls,
             max_message_size,
-        } => (false, enable_starttls, enable_ssl, require_auth, auth_require_tls, max_message_size),
+        } => (false, enable_starttls, enable_ssl, require_auth, enable_auth, auth_require_tls, max_message_size),
         ListenerKind::Smtps {
             require_auth,
+            enable_auth,
             auth_require_tls,
             max_message_size,
-        } => (true, false, true, require_auth, auth_require_tls, max_message_size),
+        } => (true, false, true, require_auth, enable_auth, auth_require_tls, max_message_size),
     };
 
     let stream = if implicit_tls {
@@ -470,7 +486,9 @@ async fn handle_connection(
                 write_line(&mut writer, "250-STARTTLS".to_string()).await?;
             }
 
-            write_line(&mut writer, "250-AUTH PLAIN LOGIN".to_string()).await?;
+            if enable_auth {
+                write_line(&mut writer, "250-AUTH PLAIN LOGIN".to_string()).await?;
+            }
             write_line(&mut writer, "250 OK".to_string()).await?;
             continue;
         }
@@ -541,6 +559,10 @@ async fn handle_connection(
         }
 
         if upper.starts_with("AUTH ") {
+            if !enable_auth {
+                write_line(&mut writer, "502 5.5.1 AUTH not available".to_string()).await?;
+                continue;
+            }
             if auth_require_tls && !session.tls_active {
                 write_line(&mut writer, "538 5.7.11 Encryption required for requested authentication mechanism".to_string()).await?;
                 continue;
