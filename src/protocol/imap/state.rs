@@ -80,6 +80,10 @@ pub struct ImapSession {
 
     // Mailbox cache for performance
     mailbox_cache: Arc<RwLock<HashMap<Uuid, MailboxCacheEntry>>>,
+
+    // Simple rate limiting per session
+    pub rate_window_start: Option<std::time::Instant>,
+    pub rate_count: u32,
 }
 
 
@@ -144,6 +148,8 @@ impl ImapSession {
             literal_buffer: String::new(),
             failed_attempts: 0,
             mailbox_cache: Arc::new(RwLock::new(HashMap::new())),
+            rate_window_start: None,
+            rate_count: 0,
         }
     }
 

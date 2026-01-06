@@ -60,26 +60,36 @@ pub async fn run_imap(runtime: Arc<Runtime>) -> anyhow::Result<()> {
         None
     };
 
-    // --- 2. Start Plain IMAP (Add error logging) ---
-    let plain_addr = format!("{}:{}", bind_addr, port);
-    info!("Attempting to bind IMAP to {}", plain_addr); // Debug log
+    let tls_only = config.get_bool("imap", "tls_only", false);
 
-    let plain_listener = match TcpListener::bind(&plain_addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            error!("FATAL: Could not bind to IMAP port {}: {}", plain_addr, e);
-            return Err(e.into());
+    // --- 2. Start Plain IMAP unless TLS-only ---
+    if !tls_only {
+        let plain_addr = format!("{}:{}", bind_addr, port);
+        info!("Attempting to bind IMAP to {}", plain_addr); // Debug log
+
+        let plain_listener = match TcpListener::bind(&plain_addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                error!("FATAL: Could not bind to IMAP port {}: {}", plain_addr, e);
+                return Err(e.into());
+            }
+        };
+        info!("IMAP listening on: {}", plain_addr);
+
+        let runtime_plain = runtime.clone();
+        let semaphore_plain = semaphore.clone();
+
+        // Spawn Plain Listener
+        tokio::spawn(async move {
+            accept_connections(plain_listener, runtime_plain, semaphore_plain, None).await;
+        });
+    } else {
+        info!("TLS-only mode enabled: Plain IMAP listener disabled");
+        if tls_acceptor.is_none() {
+            error!("TLS-only requires 'enable_ssl=true' and valid cert/key");
+            return Err(anyhow::anyhow!("TLS-only enabled without SSL configuration"));
         }
-    };
-    info!("IMAP listening on: {}", plain_addr);
-
-    let runtime_plain = runtime.clone();
-    let semaphore_plain = semaphore.clone();
-
-    // Spawn Plain Listener
-    tokio::spawn(async move {
-        accept_connections(plain_listener, runtime_plain, semaphore_plain, None).await;
-    });
+    }
 
     // Start IMAPS if enabled
     if let Some(acceptor) = tls_acceptor {
@@ -94,6 +104,10 @@ pub async fn run_imap(runtime: Arc<Runtime>) -> anyhow::Result<()> {
         tokio::spawn(async move {
             accept_connections(ssl_listener, runtime_ssl, semaphore_ssl, Some(acceptor)).await;
         });
+    } else if tls_only {
+        // In TLS-only mode, IMAPS must be available
+        error!("TLS-only mode enabled but IMAPS listener not started");
+        return Err(anyhow::anyhow!("IMAPS not available in TLS-only mode"));
     }
 
     Ok(())

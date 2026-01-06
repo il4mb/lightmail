@@ -11,16 +11,26 @@ database = maildb
 pool_size = 10
 
 [imap]
-imap_port = 143
-imaps_port = 993
+port = 143
+ssl_port = 993
 max_clients = 100
 buffer_size = 8192
 session_timeout = 1800
+use_starttls = true
+auth_method = plain
+username =
+password =
 max_failed_attempts = 5
-fast_append = true  # fast test mode: complete APPEND quickly
+enable_ssl = true
+tls_cert = /var/projects/lightmail/certs/cert.pem
+tls_key = /var/projects/lightmail/certs/key.pem
+tls_only = false
+rate_limit_window_secs = 10
+rate_limit_commands = 50
 
 [lmtp]
-socket=/run/
+host = 127.0.0.1
+port = 25
 
 [logging]
 path = /var/log/lightmail/lightmail.log
@@ -28,6 +38,7 @@ path = /var/log/lightmail/lightmail.log
 [ssl]
 cert_file = /var/projects/lightmail/certs/cert.pem
 key_file = /var/projects/lightmail/certs/key.pem
+smtps_port = 465
 
 [s3]
 endpoint = 
@@ -35,6 +46,8 @@ region = us-east-1
 bucket = mails
 access_key = 
 secret_key = 
+use_smtps = false
+auto_tls_fallback = true
 use_ssl = 1
 
 [api]

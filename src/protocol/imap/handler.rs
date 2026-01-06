@@ -133,10 +133,19 @@ impl ImapHandler {
             .unwrap_or(false);
 
         let session = self.session.lock().await;
+        // Start with IMAP4rev1 and merge session capabilities
         let mut caps: Vec<String> = vec!["IMAP4rev1".to_string()];
+        // Merge session capabilities
+        for c in &session.capabilities {
+            if !caps.iter().any(|x| x.eq_ignore_ascii_case(c)) {
+                caps.push(c.clone());
+            }
+        }
         if enable_ssl && !session.tls_active {
             // Advertise STARTTLS only on non-TLS connections when SSL is enabled
-            caps.push("STARTTLS".to_string());
+            if !caps.iter().any(|x| x.eq_ignore_ascii_case("STARTTLS")) {
+                caps.push("STARTTLS".to_string());
+            }
         }
         drop(session);
 
@@ -158,7 +167,47 @@ impl ImapHandler {
         writer: &mut BufWriter<impl AsyncWriteExt + Unpin>
     ) -> Result<()> {
         info!("IMAP command received: tag={} cmd={:?}", tag, command);
-        
+        // Enforce TLS-only if configured
+        let tls_only = self.runtime.config.get_bool("imap", "tls_only", false);
+        if tls_only {
+            let session = self.session.lock().await;
+            let is_tls = session.tls_active;
+            drop(session);
+            match command {
+                ImapCommand::Starttls | ImapCommand::Capability | ImapCommand::Logout | ImapCommand::Noop => {}
+                _ => {
+                    if !is_tls {
+                        self.send_error(writer, tag, "NO", "TLS required").await?;
+                        return Ok(());
+                    }
+                }
+            }
+        }
+
+        // Per-session rate limiting: N commands per window
+        let window_secs = self.runtime.config.get_int("imap", "rate_limit_window_secs", 10);
+        let max_cmds = self.runtime.config.get_int("imap", "rate_limit_commands", 50);
+        {
+            use std::time::{Instant, Duration};
+            let mut session = self.session.lock().await;
+            let now = Instant::now();
+            if let Some(start) = session.rate_window_start {
+                if now.duration_since(start) > Duration::from_secs(window_secs as u64) {
+                    session.rate_window_start = Some(now);
+                    session.rate_count = 0;
+                }
+            } else {
+                session.rate_window_start = Some(now);
+                session.rate_count = 0;
+            }
+            session.rate_count = session.rate_count.saturating_add(1);
+            if (session.rate_count as i32) > max_cmds {
+                drop(session);
+                self.send_error(writer, tag, "NO", "Rate limit exceeded").await?;
+                return Ok(());
+            }
+        }
+
         match command {
             ImapCommand::Capability => self.handle_capability(tag, writer).await,
             ImapCommand::Noop => self.handle_noop(tag, writer).await,
@@ -909,17 +958,24 @@ impl ImapHandler {
         // Parse literal size: {123}
         if let Some(start) = remaining.find('{') {
             if let Some(end) = remaining[start..].find('}') {
-                let size_str = &remaining[start + 1..start + end];
+                let mut size_str = remaining[start + 1..start + end].to_string();
+                // Detect non-synchronizing literal: {size+}
+                let mut non_sync = false;
+                if size_str.ends_with('+') {
+                    non_sync = true;
+                    size_str.pop();
+                }
                 if let Ok(size) = size_str.parse::<usize>() {
                     session.in_literal = true;
                     session.literal_remaining = size;
                     session.literal_buffer.clear();
 
-                    // Send continuation request unconditionally.
-                    // We currently don't advertise LITERAL+ in greeting, and
-                    // some clients (e.g., ImapTest) expect a continuation.
-                    writer.write_all(b"+ Ready for literal data\r\n").await?;
-                    writer.flush().await?;
+                    // Send continuation only for synchronizing literals
+                    // If client used LITERAL+ ({size+}), don't send continuation
+                    if !non_sync {
+                        writer.write_all(b"+ Ready for literal data\r\n").await?;
+                        writer.flush().await?;
+                    }
                     return Ok(());
                 }
             }
@@ -1366,21 +1422,6 @@ impl ImapHandler {
     ) -> Result<()> {
         if content.is_empty() {
             return self.send_error(writer, tag, "BAD", "Message literal required").await;
-        }
-
-        // Fast path for testing: avoid heavy storage/DB work to prevent stalls.
-        // Controlled via config: imap.fast_append (default: true for dev/testing)
-        let fast_append = self.runtime.config.get_bool("imap", "fast_append", true);
-        if fast_append {
-            // If mailbox is currently selected, emit minimal EXISTS/RECENT updates
-            if let Some(_sel_id) = selected_mailbox_id {
-                // Best-effort: send generic updates without hitting DB
-                writer.write_all(b"* 1 EXISTS\r\n").await?;
-                writer.write_all(b"* 1 RECENT\r\n").await?;
-            }
-            writer.write_all(format!("{} OK APPEND completed\r\n", tag).as_bytes()).await?;
-            writer.flush().await?;
-            return Ok(());
         }
 
         let runtime = self.runtime.clone();

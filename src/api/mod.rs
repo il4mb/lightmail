@@ -48,6 +48,7 @@ pub async fn run_api(runtime: Arc<Runtime>) -> anyhow::Result<()> {
         .route("/admin/messages/{message_id}", delete(admin_delete_message))
         .route("/admin/messages/{message_id}/copy", post(admin_copy_message))
         .route("/admin/messages/{message_id}/move", post(admin_move_message))
+            .route("/admin/send", post(admin_send_email))
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn_with_state(runtime.clone(), auth_middleware))
         .with_state(runtime);
