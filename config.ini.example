@@ -31,7 +31,9 @@ rate_limit_window_secs = 10
 rate_limit_commands = 50
 
 [lmtp]
-socket = /tmp/lightmail-lmtp.socket
+# If Postfix is delivering via LMTP, keep the socket inside /var/spool/postfix (chroot-safe).
+# For non-Postfix setups you can choose another local path.
+socket = /var/spool/postfix/lightmail/lmtp.sock
 # Max message size enforced by LMTP/APPEND paths (bytes)
 max_message_size = 52428800
 
@@ -110,6 +112,15 @@ enabled = false
 host = localhost
 port = 3310
 mode = quarantine  # options: reject|quarantine|tag
+[webhook]
+# Optional: send HTTP POST notifications on selected events.
+enabled = false
+url = http://127.0.0.1:9000/lightmail/webhook
+# If set, sent as: Authorization: Bearer <token>
+token = ""
+# Comma-separated list. Currently supported: message.delivered
+events = message.delivered
+timeout_ms = 2000
 
 [garbage]
 # Number of soft-deleted messages processed per batch

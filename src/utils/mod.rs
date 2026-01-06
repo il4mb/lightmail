@@ -1,5 +1,6 @@
 pub mod config;
 pub mod garbage;
+pub mod webhook;
 
 use uuid::{NoContext, Timestamp, Uuid};
 

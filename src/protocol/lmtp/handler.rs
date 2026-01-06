@@ -8,7 +8,7 @@ use tracing::{ debug, error, info, warn, instrument };
 use crate::{
     runtime::Runtime,
     storage::models::{ account, mailbox, message, object },
-    utils::uuid7,
+    utils::{uuid7, webhook::{spawn_webhook_event, WebhookEvent}},
 };
 use anyhow::{ Result };
 use std::{ collections::HashMap, path::Path, sync::Arc };
@@ -525,8 +525,24 @@ async fn deliver_message_to_recipients(
             uid: 0, // Will be set by DB trigger or auto-increment if mapped to id
         };
         match message::create_message(pool, &message).await {
-            Ok(_) => {
-                results.push((recipient.email.clone(), DeliveryResult::Success(message.id)));
+            Ok(created) => {
+                results.push((recipient.email.clone(), DeliveryResult::Success(created.id)));
+
+                // Best-effort webhook; must not affect LMTP delivery outcome.
+                spawn_webhook_event(
+                    runtime.clone(),
+                    WebhookEvent::message_delivered(
+                        "lmtp",
+                        created.id,
+                        recipient.mailbox_id,
+                        object.id,
+                        object_key.clone(),
+                        senders.clone(),
+                        Some(recipient.email.clone()),
+                        subject.clone(),
+                        data_bytes.len() as i64,
+                    ),
+                );
             }
             Err(e) => {
                 error!("Failed to create message: {}", e);

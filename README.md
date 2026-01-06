@@ -104,20 +104,43 @@ If you want to use Postfix for internet-facing SMTP (queueing, retry, DNS checks
 - Postfix receives mail from the internet.
 - Postfix delivers to LightMail via LMTP over a local UNIX socket.
 
+### 0) UNIX socket permissions (recommended)
+Run LightMail as a dedicated user/group (example: `lightmail:lightmail`) and allow Postfix to access the LMTP socket via group membership:
+
+```bash
+sudo groupadd --system lightmail
+sudo useradd --system --no-create-home --gid lightmail lightmail
+
+# Allow Postfix to connect to the LMTP socket
+sudo usermod -aG lightmail postfix
+
+# Postfix reads group membership at startup
+sudo systemctl restart postfix
+```
+
+Create a socket directory inside Postfix's spool (works with Postfix's default chrooted services):
+
+```bash
+sudo mkdir -p /var/spool/postfix/lightmail
+sudo chown lightmail:lightmail /var/spool/postfix/lightmail
+sudo chmod 750 /var/spool/postfix/lightmail
+```
+
 ### 1) Enable LMTP in LightMail
 In `/etc/lightmail/config.ini`:
 ```
 [lmtp]
-socket = /tmp/lightmail-lmtp.socket
+socket = /var/spool/postfix/lightmail/lmtp.sock
 max_message_size = 52428800
 ```
-Make sure the LightMail service user has permission to create/write the socket path.
+Expected permissions (after LightMail starts):
+`srw-rw---- lightmail lightmail ... lmtp.sock`
 
 ### 2) Configure Postfix to deliver via LMTP
 Add this to `/etc/postfix/main.cf`:
 ```
 # Deliver local mail to LightMail over LMTP
-virtual_transport = lmtp:unix:/tmp/lightmail-lmtp.socket
+virtual_transport = lmtp:unix:/var/spool/postfix/lightmail/lmtp.sock
 ```
 
 If you only want some domains/users to go to LightMail, use `transport_maps` instead (domain-based routing):
@@ -126,12 +149,18 @@ transport_maps = hash:/etc/postfix/transport
 ```
 Example `/etc/postfix/transport`:
 ```
-example.com lmtp:unix:/tmp/lightmail-lmtp.socket
+example.com lmtp:unix:/var/spool/postfix/lightmail/lmtp.sock
 ```
 Then run:
 ```bash
 sudo postmap /etc/postfix/transport
 sudo systemctl reload postfix
+```
+
+Verification helpers:
+```bash
+ls -l /var/spool/postfix/lightmail/lmtp.sock
+id postfix
 ```
 
 ### 3) Run LightMail behind Postfix (optional)

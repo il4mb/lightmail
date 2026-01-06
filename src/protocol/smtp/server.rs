@@ -19,7 +19,7 @@ use tracing::{error, info, warn};
 use crate::{
     runtime::Runtime,
     storage::models::{account, mailbox, message, object},
-    utils::uuid7,
+    utils::{uuid7, webhook::{spawn_webhook_event, WebhookEvent}},
 };
 
 /// Inbound SMTP/Submission server.
@@ -243,6 +243,7 @@ async fn accept_loop(
 #[derive(Debug)]
 struct RecipientInfo {
     mailbox_id: i64,
+    email: String,
 }
 
 #[derive(Debug)]
@@ -631,7 +632,10 @@ async fn handle_connection(
 
             match validate_recipient(&pool, &rcpt).await {
                 Ok(Some((_account_id, mailbox_id))) => {
-                    session.transaction.recipients.push(RecipientInfo { mailbox_id });
+                    session
+                        .transaction
+                        .recipients
+                        .push(RecipientInfo { mailbox_id, email: rcpt.clone() });
                     write_line(&mut writer, "250 2.1.5 Recipient OK".to_string()).await?;
                 }
                 Ok(None) => {
@@ -904,7 +908,23 @@ async fn deliver_message_to_recipients(
             uid: 0,
         };
 
-        let _ = message::create_message(pool, &msg).await?;
+        let created = message::create_message(pool, &msg).await?;
+
+        // Best-effort webhook; must not affect SMTP accept path.
+        spawn_webhook_event(
+            runtime.clone(),
+            WebhookEvent::message_delivered(
+                "smtp",
+                created.id,
+                r.mailbox_id,
+                obj.id,
+                object_key.clone(),
+                sender.clone(),
+                Some(r.email.clone()),
+                subject.clone(),
+                data_bytes.len() as i64,
+            ),
+        );
     }
 
     Ok(())
