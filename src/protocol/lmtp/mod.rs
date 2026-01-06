@@ -2,7 +2,7 @@ pub mod handler;
 
 use tokio::{ net::UnixListener };
 use std::{ path::Path, sync::Arc };
-use tracing::info;
+use tracing::{info, error};
 
 use crate::runtime::Runtime;
 
@@ -15,13 +15,26 @@ pub async fn run_lmtp(runtime: Arc<Runtime>) {
     let path = Path::new(config.get_value("lmtp", "socket").unwrap_or("/tmp/lmtp.sock"));
 
     if path.exists() && path.is_dir() {
-        panic!("LMTP socket path must not be a directory");
+        error!("LMTP socket path is a directory: {:?}", path);
+        return; // do not crash the whole server
     }
     if path.exists() {
-        std::fs::remove_file(path).unwrap();
+        match std::fs::remove_file(path) {
+            Ok(_) => {}
+            Err(e) => {
+                error!("Failed to remove existing LMTP socket {:?}: {}", path, e);
+                return; // skip starting LMTP rather than panicking
+            }
+        }
     }
 
-    let listener = UnixListener::bind(path).unwrap();
+    let listener = match UnixListener::bind(path) {
+        Ok(l) => l,
+        Err(e) => {
+            error!("Failed to bind LMTP socket {:?}: {}", path, e);
+            return;
+        }
+    };
     info!("LMTP server listening on {path:?}");
 
     loop {

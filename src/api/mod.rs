@@ -14,6 +14,7 @@ use crate::storage::models::calendar;
 use crate::storage::models::{ account, mailbox, message };
 use tracing::info;
 use serde::{Deserialize, Serialize};
+use crate::protocol::smtp;
 
 pub async fn run_api(runtime: Arc<Runtime>) -> anyhow::Result<()> {
     let config = &runtime.config;
@@ -48,7 +49,7 @@ pub async fn run_api(runtime: Arc<Runtime>) -> anyhow::Result<()> {
         .route("/admin/messages/{message_id}", delete(admin_delete_message))
         .route("/admin/messages/{message_id}/copy", post(admin_copy_message))
         .route("/admin/messages/{message_id}/move", post(admin_move_message))
-            .route("/admin/send", post(admin_send_email))
+        .route("/admin/send", post(admin_send_email))
         .layer(TraceLayer::new_for_http())
         .layer(middleware::from_fn_with_state(runtime.clone(), auth_middleware))
         .with_state(runtime);
@@ -366,5 +367,49 @@ async fn list_events(
     match calendar::list_events(db.pool(), payload.calendar_id).await {
         Ok(events) => Ok(Json(events)),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+// ---------------------- Admin: Send Email ----------------------
+#[derive(Deserialize)]
+struct AdminSendReq {
+    from: String,
+    to: Vec<String>,
+    subject: Option<String>,
+    body: Option<String>,
+    raw: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AdminSendRes { queued: bool }
+
+#[axum::debug_handler]
+async fn admin_send_email(
+    State(runtime): State<Arc<Runtime>>, 
+    Json(req): Json<AdminSendReq>
+) -> Result<Json<AdminSendRes>, StatusCode> {
+    // Build RFC 5322 message if raw not provided
+    let data = if let Some(raw) = req.raw {
+        raw
+    } else {
+        let hostname = runtime.config.get_value("system", "hostname").unwrap_or("localhost");
+        let date = chrono::Utc::now().to_rfc2822();
+        let subject = req.subject.unwrap_or_else(|| "(no subject)".to_string());
+        let body = req.body.unwrap_or_default();
+        format!(
+            "From: {}\r\nTo: {}\r\nSubject: {}\r\nDate: {}\r\nMessage-ID: <{}@{}>\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=us-ascii\r\n\r\n{}\r\n",
+            req.from,
+            req.to.join(", "),
+            subject,
+            date,
+            uuid::Uuid::new_v4(),
+            hostname,
+            body
+        )
+    };
+
+    match smtp::send_email(runtime.clone(), &req.from, &req.to, &data).await {
+        Ok(_) => Ok(Json(AdminSendRes { queued: true })),
+        Err(_) => Err(StatusCode::BAD_GATEWAY),
     }
 }

@@ -5,6 +5,7 @@ mod storage;
 mod api;
 
 use std::{ env, sync::Arc };
+use std::path::Path;
 use anyhow::Result;
 use tracing::{ info, error };
 
@@ -40,7 +41,20 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    let loader = ConfigLoader::new(config_path).load().await?;
+    // Resolve config path: honor CLI arg, else fallback for dev
+    let resolved_path = if Path::new(&config_path).exists() {
+        config_path.clone()
+    } else {
+        let dev_path = "config/lightmail.conf";
+        if Path::new(dev_path).exists() {
+            info!("Using dev config at {}", dev_path);
+            dev_path.to_string()
+        } else {
+            config_path.clone()
+        }
+    };
+
+    let loader = ConfigLoader::new(resolved_path).load().await?;
     let data = loader.get_config().clone();
     let config = Arc::new(data);
 

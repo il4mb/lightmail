@@ -1,9 +1,11 @@
 use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use tokio::net::TcpStream;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 use crate::runtime::Runtime;
 use tracing::info;
+use base64::engine::general_purpose::STANDARD as B64;
+use base64::Engine as _;
 
 pub async fn send_email(runtime: Arc<Runtime>, from: &str, to: &[String], data: &str) -> Result<()> {
     let host = runtime.config.get_value("smtp", "host").unwrap_or("127.0.0.1").to_string();
@@ -16,8 +18,8 @@ pub async fn send_email(runtime: Arc<Runtime>, from: &str, to: &[String], data: 
     let addr = format!("{}:{}", host, port);
 
     let hostname = runtime.config.get_value("system", "hostname").unwrap_or("localhost");
-    let mut reader;
-    let mut writer;
+    let mut reader: BufReader<Box<dyn AsyncRead + Unpin + Send>>;
+    let mut writer: BufWriter<Box<dyn AsyncWrite + Unpin + Send>>;
 
     // Auto-fallback when enabled: try STARTTLS first, then SMTPS if it fails
     let auto_fallback = runtime.config.get_bool("smtp", "auto_tls_fallback", true);
@@ -31,28 +33,28 @@ pub async fn send_email(runtime: Arc<Runtime>, from: &str, to: &[String], data: 
         info!("SMTP SMTPS handshake using host: {}", domain);
         let tls_stream = connector.connect(domain, tcp).await.map_err(|e| anyhow!("SMTPS connect failed: {}", e))?;
         let (r2, w2) = tokio::io::split(tls_stream);
-        reader = BufReader::new(r2);
-        writer = BufWriter::new(w2);
+        reader = BufReader::new(Box::new(r2));
+        writer = BufWriter::new(Box::new(w2));
         read_expect(&mut reader, 220).await?;
         ehlo(&mut writer, &mut reader, hostname).await?;
     } else {
         // Plain TCP first
         let tcp = TcpStream::connect(addr).await?;
         let (r, w) = tokio::io::split(tcp);
-        reader = BufReader::new(r);
-        writer = BufWriter::new(w);
-        read_expect(&mut reader, 220).await?;
-        ehlo(&mut writer, &mut reader, hostname).await?;
+        let mut local_reader = BufReader::new(r);
+        let mut local_writer = BufWriter::new(w);
+        read_expect(&mut local_reader, 220).await?;
+        ehlo(&mut local_writer, &mut local_reader, hostname).await?;
 
         if runtime.config.get_bool("smtp", "use_starttls", false) {
             // Try STARTTLS
             let starttls_attempt = async {
-                write_line(&mut writer, "STARTTLS".to_string()).await?;
-                read_expect(&mut reader, 220).await?;
+                write_line(&mut local_writer, "STARTTLS".to_string()).await?;
+                read_expect(&mut local_reader, 220).await?;
                 let cx = native_tls::TlsConnector::new().map_err(|e| anyhow!("TLS init: {}", e))?;
                 let connector = tokio_native_tls::TlsConnector::from(cx);
                 let domain = hostname;
-                let stream = reader.into_inner().unsplit(writer.into_inner());
+                let stream = local_reader.into_inner().unsplit(local_writer.into_inner());
                 info!("SMTP STARTTLS handshake using host: {}", domain);
                 let tls_stream = connector.connect(domain, stream).await.map_err(|e| anyhow!("STARTTLS failed: {}", e))?;
                 let (r2, w2) = tokio::io::split(tls_stream);
@@ -64,8 +66,8 @@ pub async fn send_email(runtime: Arc<Runtime>, from: &str, to: &[String], data: 
 
             match starttls_attempt {
                 Ok((r_tls, w_tls)) => {
-                    reader = r_tls;
-                    writer = w_tls;
+                    reader = BufReader::new(Box::new(r_tls.into_inner()));
+                    writer = BufWriter::new(Box::new(w_tls.into_inner()));
                 }
                 Err(e) => {
                     if auto_fallback {
@@ -79,8 +81,8 @@ pub async fn send_email(runtime: Arc<Runtime>, from: &str, to: &[String], data: 
                         info!("SMTP fallback SMTPS handshake using host: {}", domain);
                         let tls_stream = connector.connect(domain, tcp2).await.map_err(|e| anyhow!("SMTPS connect failed: {}", e))?;
                         let (r3, w3) = tokio::io::split(tls_stream);
-                        reader = BufReader::new(r3);
-                        writer = BufWriter::new(w3);
+                        reader = BufReader::new(Box::new(r3));
+                        writer = BufWriter::new(Box::new(w3));
                         read_expect(&mut reader, 220).await?;
                         ehlo(&mut writer, &mut reader, hostname).await?;
                     } else {
@@ -88,63 +90,41 @@ pub async fn send_email(runtime: Arc<Runtime>, from: &str, to: &[String], data: 
                     }
                 }
             }
+        } else {
+            // No STARTTLS: keep plain halves
+            reader = BufReader::new(Box::new(local_reader.into_inner()));
+            writer = BufWriter::new(Box::new(local_writer.into_inner()));
         }
     }
 
-    // STARTTLS upgrade when enabled
-    if runtime.config.get_bool("smtp", "use_starttls", false) {
-        write_line(&mut writer, "STARTTLS".to_string()).await?;
-        read_expect(&mut reader, 220).await?;
-
-        // Perform TLS handshake
-        let cx = native_tls::TlsConnector::new().map_err(|e| anyhow!("TLS init: {}", e))?;
-        let connector = tokio_native_tls::TlsConnector::from(cx);
-        let domain = hostname;
-
-        // Reconstruct underlying stream from halves
-        let stream = reader.into_inner().unsplit(writer.into_inner());
-        info!("SMTP STARTTLS handshake using host: {}", domain);
-        let tls_stream = connector.connect(domain, stream).await.map_err(|e| anyhow!("STARTTLS failed: {}", e))?;
-        let (r2, w2) = tokio::io::split(tls_stream);
-        let mut reader_tls = BufReader::new(r2);
-        let mut writer_tls = BufWriter::new(w2);
-
-        // EHLO again post-TLS
-        ehlo(&mut writer_tls, &mut reader_tls, hostname).await?;
-
-        // AUTH if configured
-        if let (Some(user), Some(pass)) = (
-            runtime.config.get_value("smtp", "username"),
-            runtime.config.get_value("smtp", "password")
-        ) {
-            let method = runtime.config.get_value("smtp", "auth_method").unwrap_or("plain");
-            match method.to_ascii_lowercase().as_str() {
-                "login" => {
-                    // AUTH LOGIN
-                    write_line(&mut writer_tls, "AUTH LOGIN".to_string()).await?;
-                    let l1 = read_line(&mut reader_tls).await?; // expect 334
-                    if !l1.starts_with("334") { return Err(anyhow!("AUTH LOGIN expected 334, got: {}", l1)); }
-                    let u_b64 = base64::encode(user);
-                    write_line(&mut writer_tls, u_b64).await?;
-                    let l2 = read_line(&mut reader_tls).await?;
-                    if !l2.starts_with("334") { return Err(anyhow!("AUTH LOGIN expected 334 (pass), got: {}", l2)); }
-                    let p_b64 = base64::encode(pass);
-                    write_line(&mut writer_tls, p_b64).await?;
-                    read_expect(&mut reader_tls, 235).await?;
-                }
-                _ => {
-                    // AUTH PLAIN \0user\0pass
-                    let payload = format!("\u{0000}{}\u{0000}{}", user, pass);
-                    let b64 = base64::encode(payload);
-                    write_line(&mut writer_tls, format!("AUTH PLAIN {}", b64)).await?;
-                    read_expect(&mut reader_tls, 235).await?;
-                }
+    // AUTH if configured (works for either plain or TLS connection)
+    if let (Some(user), Some(pass)) = (
+        runtime.config.get_value("smtp", "username"),
+        runtime.config.get_value("smtp", "password")
+    ) {
+        let method = runtime.config.get_value("smtp", "auth_method").unwrap_or("plain");
+        match method.to_ascii_lowercase().as_str() {
+            "login" => {
+                // AUTH LOGIN
+                write_line(&mut writer, "AUTH LOGIN".to_string()).await?;
+                let l1 = read_line(&mut reader).await?; // expect 334
+                if !l1.starts_with("334") { return Err(anyhow!("AUTH LOGIN expected 334, got: {}", l1)); }
+                let u_b64 = B64.encode(user);
+                write_line(&mut writer, u_b64).await?;
+                let l2 = read_line(&mut reader).await?;
+                if !l2.starts_with("334") { return Err(anyhow!("AUTH LOGIN expected 334 (pass), got: {}", l2)); }
+                let p_b64 = B64.encode(pass);
+                write_line(&mut writer, p_b64).await?;
+                read_expect(&mut reader, 235).await?;
+            }
+            _ => {
+                // AUTH PLAIN \0user\0pass
+                let payload = format!("\u{0000}{}\u{0000}{}", user, pass);
+                let b64 = B64.encode(payload);
+                write_line(&mut writer, format!("AUTH PLAIN {}", b64)).await?;
+                read_expect(&mut reader, 235).await?;
             }
         }
-
-        // Swap back to shared names for following steps
-        reader = reader_tls;
-        writer = writer_tls;
     }
 
     write_line(&mut writer, format!("MAIL FROM:<{}>", from)).await?;
@@ -170,7 +150,7 @@ pub async fn send_email(runtime: Arc<Runtime>, from: &str, to: &[String], data: 
 }
 
 async fn ehlo<W, R>(writer: &mut BufWriter<W>, reader: &mut BufReader<R>, hostname: &str) -> Result<()>
-where W: AsyncWrite + Unpin, R: AsyncBufRead + Unpin {
+where W: AsyncWrite + Unpin, R: AsyncRead + Unpin {
     write_line(writer, format!("EHLO {}", hostname)).await?;
     // Read multiline 250 responses
     loop {
@@ -221,14 +201,14 @@ where W: AsyncWrite + Unpin {
 }
 
 async fn read_line<R>(reader: &mut BufReader<R>) -> Result<String>
-where R: AsyncBufRead + Unpin {
+where R: AsyncRead + Unpin {
     let mut buf = String::new();
     reader.read_line(&mut buf).await?;
     Ok(buf.trim_end_matches("\r\n").to_string())
 }
 
 async fn read_expect<R>(reader: &mut BufReader<R>, code: u16) -> Result<String>
-where R: AsyncBufRead + Unpin {
+where R: AsyncRead + Unpin {
     let line = read_line(reader).await?;
     let ok = line.starts_with(&code.to_string());
     if !ok { return Err(anyhow!("SMTP expected {} got: {}", code, line)); }
@@ -236,6 +216,6 @@ where R: AsyncBufRead + Unpin {
 }
 
 async fn read_any<R>(reader: &mut BufReader<R>) -> Result<String>
-where R: AsyncBufRead + Unpin {
+where R: AsyncRead + Unpin {
     read_line(reader).await
 }

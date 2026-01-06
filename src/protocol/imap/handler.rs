@@ -174,7 +174,7 @@ impl ImapHandler {
             let is_tls = session.tls_active;
             drop(session);
             match command {
-                ImapCommand::Starttls | ImapCommand::Capability | ImapCommand::Logout | ImapCommand::Noop => {}
+                ImapCommand::StartTls | ImapCommand::Capability | ImapCommand::Logout | ImapCommand::Noop => {}
                 _ => {
                     if !is_tls {
                         self.send_error(writer, tag, "NO", "TLS required").await?;

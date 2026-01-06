@@ -21,7 +21,7 @@ toml = "0.8"
 async-trait = "0.1"
 anyhow = "1.0.100"
 mail-parser = "0.11.1"
-uuid =  {version = "1.19.0", features = ["v7"]}
+uuid =  {version = "1.19.0", features = ["v4","v7"]}
 chrono = { version = "0.4.42", features = ["serde"] }
 percent-encoding = "2.3.2"
 aws-sdk-s3 = "1.119.0"
@@ -33,7 +33,7 @@ rustls = "0.23.35"
 tokio-rustls = "0.26.4"
 rustls-pemfile = "2.2.0"
 bcrypt = "0.17.1"
-axum = "0.8.8"
+axum = { version = "0.8.8", features = ["macros"] }
 tower-http = { version = "0.6.8", features = ["trace"] }
 clamav-client = { version = "2.2.0", features = ["tokio-stream"] }
 base64 = "0.21"
@@ -43,3 +43,7 @@ native-tls = "0.2"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+[dev-dependencies]
+reqwest = { version = "0.12.4", features = ["json", "rustls-tls"] }
+rcgen = "0.13"
