@@ -33,7 +33,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md), [RFC_COMPLIANCE.md](RFC_COMPLIANCE.md), 
 For admin-only HTTP management, see [docs/API.md](docs/API.md).
 
 ## Configuration
-The default config is in [config/lightmail.conf](config/lightmail.conf) and symlinked at `/var/lightmail/config.ini`.
+The default config template is in [config.ini.example](config.ini.example). Copy it to `config.ini` and customize for your environment.
 
 Key sections:
 - `[database]`: MySQL connection (host/port or socket), user, password, database
@@ -84,18 +84,6 @@ Deletions are soft-marked with `deleted_at` and processed asynchronously:
 
 Details: [GARBAGE_COLLECTOR.md](GARBAGE_COLLECTOR.md).
 
-### Garbage Worker Configuration
-
-Tune the garbage worker via config settings:
-
-```
-[garbage]
-batch_size = 100      # Number of messages per batch
-idle_seconds = 60     # Sleep when no work is found
-pause_seconds = 5     # Pause between batches
-```
-
-Adjust these values to match your storage throughput and operational needs.
 ### Garbage Worker Configuration
 
 Tune the garbage worker via config settings:

@@ -2,7 +2,7 @@
 
 Thank you for contributing to LightMail!
 
-- Follow the coding style (use `.clang-format`).
-- Add tests for new features in `tests/` and update `tests/run_tests.sh`.
-- Include a changelog entry in `readme.md` for user-facing changes.
-- Ensure `make` and `make check` pass locally.
+- Follow the Rust coding style and use `cargo fmt` to format code.
+- Add tests for new features and ensure they pass with `cargo test`.
+- Update documentation in `README.md` and other docs/ files for user-facing changes.
+- Ensure `cargo build` and `cargo clippy` pass locally before submitting.
