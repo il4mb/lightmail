@@ -206,12 +206,10 @@ impl ConfigLoader {
 
         let config_path = Path::new(filepath);
         if !config_path.exists() {
-            error!("Config file does not exist: {}", filepath);
-            std::process::exit(1);
+            return Err(anyhow::anyhow!("Config file does not exist: {}", filepath));
         }
         if !config_path.is_file() {
-            error!("Config path is not a regular file: {}", filepath);
-            std::process::exit(1);
+            return Err(anyhow::anyhow!("Config path is not a regular file: {}", filepath));
         }
 
         self.contents = Some(

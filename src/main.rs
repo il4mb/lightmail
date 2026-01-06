@@ -58,7 +58,13 @@ async fn main() -> Result<()> {
         }
     };
 
-    let loader = ConfigLoader::new(resolved_path).load().await?;
+    let loader = match ConfigLoader::new(resolved_path).load().await {
+        Ok(loader) => loader,
+        Err(e) => {
+            error!("Failed to load config: {}", e);
+            std::process::exit(1);
+        }
+    };
     let data = loader.get_config().clone();
     let config = Arc::new(data);
 

@@ -57,6 +57,19 @@ bash test_imap.sh --server 127.0.0.1 --port 1143 --no-ssl -v
 
 Seeded account: `user@example.com` with a valid password (bcrypt hash in schema).
 
+### SMTP Delivery Integration Test (Opt-in)
+There is an opt-in integration test that delivers a message via SMTP and asserts it was persisted to MySQL + S3.
+
+- It loads configuration from `/etc/lightmail/config.ini` by default.
+- For local development you can symlink it to the repo config:
+  - `sudo mkdir -p /etc/lightmail`
+  - `sudo ln -sf "$(pwd)/config/lightmail.conf" /etc/lightmail/config.ini`
+
+Run the test (requires DB + S3 reachable per your config):
+```bash
+LIGHTMAIL_DELIVERY_ITEST=1 cargo test -q smtp_delivery_persists_to_db_and_s3_when_configured
+```
+
 ### Antivirus (ClamAV)
 - Enabled via `[antivirus]` section in config; communicates with `clamd` using the INSTREAM protocol.
 - Modes:

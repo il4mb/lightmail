@@ -56,8 +56,7 @@ use_starttls = true
 use_smtps = false
 auto_tls_fallback = true
 auth_method = plain   # plain|login
-username =
-password =
+
 
 [smtp_server]
 # Inbound SMTP/Submission server (RFC 5321 + submission)
